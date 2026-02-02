@@ -325,5 +325,3 @@ Para preguntas o problemas, consulta los logs en:
 **Versión**: 1.0.0  
 **Autor**: Senior Backend Developer  
 **Stack**: Python 3.11+ | FastAPI | SQLAlchemy | MySQL | PostgreSQL
-#   C A R T E R A  
- 

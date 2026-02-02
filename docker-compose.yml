@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # ================================
+  # Servicio Principal: API FastAPI
+  # ================================
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asignacion-contratos-api
+    ports:
+      - "8000:8000"  # Puerto único para Swagger UI y API
+    environment:
+      # Configuración de la aplicación
+      - APP_NAME=Sistema de Asignación de Contratos
+      - APP_VERSION=1.0.0
+      - DEBUG=False
+      
+      # MySQL (alocreditprod) - Configuración externa
+      - MYSQL_HOST=57.130.40.1
+      - MYSQL_PORT=3306
+      - MYSQL_USER=alo_estadisticas
+      - MYSQL_PASSWORD=4K9ml8e2vqlj
+      - MYSQL_DATABASE=alocreditprod
+      
+      # PostgreSQL (nexus_db) - Configuración externa
+      - POSTGRES_HOST=3.95.195.63
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=nexus_dev_84
+      - POSTGRES_PASSWORD=ZehK7wQTpq95eU8r
+      - POSTGRES_DATABASE=nexus_db
+      
+      # Configuración de negocio
+      - DAYS_THRESHOLD=61
+      - FIXED_CONTRACT_EFFECT=pago_total
+      
+      # Rutas
+      - REPORTS_DIR=/app/reports
+      - LOCK_FILE=assignment_process.lock
+    
+    volumes:
+      # Persistir reportes generados
+      - ./reports:/app/reports
+      # Persistir logs
+      - ./logs:/app/logs
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    networks:
+      - app-network
+    
+    # Configuración de recursos (opcional, ajustar según necesidad)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+# ================================
+# Redes
+# ================================
+networks:
+  app-network:
+    driver: bridge
+
+# ================================
+# Volúmenes (opcional, para persistencia)
+# ================================
+volumes:
+  reports-data:
+  logs-data:

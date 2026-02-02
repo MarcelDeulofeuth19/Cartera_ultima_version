@@ -1,0 +1,79 @@
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.whl
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+assignment_process.log
+
+# Reports (se generan en runtime)
+reports/*.txt
+reports/*.xlsx
+
+# Lock files
+*.lock
+assignment_process.lock
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Documentation (opcional)
+*.md
+!README.md
+
+# Test files (no necesarios en producción)
+test_*.py
+tests/
+.pytest_cache/
+
+# Environment files (usar variables de Docker)
+.env
+.env.local
+.env.*.local
+
+# SSH keys
+*.pub
+github_actions_*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS specific
+Thumbs.db
