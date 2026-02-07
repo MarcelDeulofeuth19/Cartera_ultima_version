@@ -11,6 +11,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.database.connections import db_manager
 from app.api.routes.assignment import router as assignment_router
+from app.api.routes.collection_agency import router as collection_agency_router
 
 # Configuración de logging
 logging.basicConfig(
@@ -98,6 +99,7 @@ app.add_middleware(
 
 # Registrar routers
 app.include_router(assignment_router)
+app.include_router(collection_agency_router)
 
 
 @app.get("/", tags=["root"])
