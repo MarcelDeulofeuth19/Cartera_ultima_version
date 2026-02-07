@@ -7,6 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from app.core.config import settings
 from app.database.connections import db_manager
 from app.api.routes.assignment import router as assignment_router
@@ -40,11 +41,11 @@ async def lifespan(app: FastAPI):
         logger.info("Verificando conexiones de bases de datos...")
         
         with db_manager.get_mysql_session() as mysql_session:
-            mysql_session.execute("SELECT 1")
+            mysql_session.execute(text("SELECT 1"))
             logger.info("✓ MySQL conectado correctamente")
         
         with db_manager.get_postgres_session() as postgres_session:
-            postgres_session.execute("SELECT 1")
+            postgres_session.execute(text("SELECT 1"))
             logger.info("✓ PostgreSQL conectado correctamente")
         
         logger.info("=" * 100)

@@ -1,6 +1,7 @@
 """
-Servicio principal de asignación de contratos.
-Implementa la lógica de contratos fijos, limpieza y balanceo 50/50.
+Servicio de división de contratos para 8 usuarios.
+Implementa la lógica de contratos fijos, limpieza y balanceo equitativo.
+Trabaja con contratos del día 1 al 60 de atraso.
 """
 import logging
 from typing import List, Dict, Set
@@ -9,15 +10,14 @@ from app.core.config import settings
 from app.database.models import ContractAdvisor, Management
 from app.services.contract_service import ContractService
 from app.services.history_service import HistoryService
-from app.services.manual_fixed_service import ManualFixedService
 
 logger = logging.getLogger(__name__)
 
 
-class AssignmentService:
+class DivisionService:
     """
-    Servicio de asignación de contratos a asesores.
-    Implementa la lógica de contratos fijos, limpieza y balanceo.
+    Servicio de división de contratos a 8 usuarios.
+    Implementa la lógica de contratos fijos, limpieza y balanceo equitativo.
     """
     
     def __init__(self, mysql_session: Session, postgres_session: Session):
@@ -30,23 +30,6 @@ class AssignmentService:
         self.postgres_session = postgres_session
         self.contract_service = ContractService(mysql_session)
         self.history_service = HistoryService(postgres_session)
-        self.manual_fixed_service = ManualFixedService(postgres_session)
-        
-        # Variables de control para balanceo
-        self._last_assigned_user = settings.USER_IDS[1]  # Empieza con 81
-    
-    def process_manual_fixed_contracts(self, manual_contracts: Dict[int, List[int]]) -> Dict[str, any]:
-        """
-        Procesa contratos fijos manuales con validaciones por lotes.
-        
-        Args:
-            manual_contracts: Diccionario {user_id: [contract_ids]}
-        
-        Returns:
-            Estadísticas de procesamiento
-        """
-        logger.info("Procesando contratos fijos manuales...")
-        return self.manual_fixed_service.validate_and_insert_manual_fixed(manual_contracts)
     
     def get_fixed_contracts(self) -> Dict[int, Set[int]]:
         """
@@ -62,26 +45,26 @@ class AssignmentService:
             - Mantener SOLO si management_date es de máximo 30 días
             - Si han pasado más de 30 días → NO es fijo (marcar is_fixed=0)
         
-        Los contratos que cumplen las condiciones se asignan a:
-        - COBYSER: usuario 45 (incluye contratos de 45-51)
-        - SERLEFIN: usuario 81 (incluye contratos de 81-86, 102-103)
+        Los contratos que cumplen las condiciones se asignan según el usuario
+        que tiene el registro en managements (usuarios 3, 4, 5, 6, 7, 8, 11, 12).
         
         Returns:
-            Diccionario {user_id: set(contract_ids)} - Solo usuarios 45 y 81
+            Diccionario {user_id: set(contract_ids)} - Para los 8 usuarios
         """
         from datetime import datetime, timedelta
         from sqlalchemy import or_
         
         logger.info(
-            "Consultando contratos fijos desde managements (PostgreSQL)..."
+            "Consultando contratos fijos desde managements (PostgreSQL) "
+            "para división de contratos..."
         )
         logger.info(
             "Aplicando filtros: acuerdo_de_pago (promise_date) "
             "y pago_total (management_date)..."
         )
         
-        fixed_contracts = {45: set(), 81: set()}
-        # IDs de registros en managements a marcar como NO fijos
+        # Inicializar diccionario para los 8 usuarios
+        fixed_contracts = {user_id: set() for user_id in settings.DIVISION_USER_IDS}
         contracts_to_unfix = []
         
         try:
@@ -94,10 +77,9 @@ class AssignmentService:
             ) - timedelta(days=settings.PAGO_TOTAL_VALIDITY_DAYS)
             logger.info(f"Fecha límite pago_total (hace 30 días): {validity_datetime.date()}")
             
-            # Obtener TODOS los contratos con effect relevantes
-            all_users = settings.COBYSER_USERS + settings.SERLEFIN_USERS
+            # Obtener TODOS los contratos con effect relevantes de los 8 usuarios
             all_managements = self.postgres_session.query(Management).filter(
-                Management.user_id.in_(all_users),
+                Management.user_id.in_(settings.DIVISION_USER_IDS),
                 or_(
                     Management.effect == settings.EFFECT_ACUERDO_PAGO,
                     Management.effect == settings.EFFECT_PAGO_TOTAL
@@ -105,7 +87,7 @@ class AssignmentService:
             ).all()
             
             logger.info(
-                f"Registros encontrados en managements: "
+                f"Registros encontrados en managements para división: "
                 f"{len(all_managements)}"
             )
             
@@ -158,23 +140,10 @@ class AssignmentService:
                         logger.info(f"  ✗ Pago SIN FECHA: contrato {record.contract_id}, user {record.user_id}, management_date=None")
                 
                 # Si es válido, asignar al usuario correspondiente
-                if is_valid:
-                    if record.user_id in settings.COBYSER_USERS:
-                        fixed_contracts[45].add(record.contract_id)
-                    elif record.user_id in settings.SERLEFIN_USERS:
-                        fixed_contracts[81].add(record.contract_id)
+                if is_valid and record.user_id in settings.DIVISION_USER_IDS:
+                    fixed_contracts[record.user_id].add(record.contract_id)
             
-            # Actualizar registros que ya NO son fijos
-            # (por lotes para optimizar)
-            # NOTA: Esta actualización solo se hace si la columna exists
-            if contracts_to_unfix:
-                logger.info(
-                    f"Contratos que ya NO cumplen condiciones para "
-                    f"ser fijos: {len(contracts_to_unfix)}"
-                )
-                # No actualizamos is_fixed por ahora (columna opcional)
-            
-            logger.info("✓ Análisis de contratos fijos completado:")
+            logger.info(f"✓ Análisis de contratos fijos para división completado:")
             logger.info("  Acuerdo de Pago:")
             logger.info(
                 f"    - Válidos (promise_date >= hoy): "
@@ -194,80 +163,80 @@ class AssignmentService:
                 f"{stats['pago_total_expired']}"
             )
             logger.info("")
-            logger.info("  Contratos fijos activos:")
-            logger.info(
-                f"    - COBYSER (Usuario 45): "
-                f"{len(fixed_contracts[45])} contratos"
-            )
-            logger.info(
-                f"    - SERLEFIN (Usuario 81): "
-                f"{len(fixed_contracts[81])} contratos"
-            )
-            total_fixed = len(fixed_contracts[45]) + len(fixed_contracts[81])
+            logger.info("  Contratos fijos activos por usuario:")
+            total_fixed = 0
+            for user_id in settings.DIVISION_USER_IDS:
+                count = len(fixed_contracts[user_id])
+                total_fixed += count
+                logger.info(f"    - Usuario {user_id}: {count} contratos")
             logger.info(f"    - Total: {total_fixed}")
             
             return fixed_contracts
         
         except Exception as e:
-            logger.error(f"✗ Error al consultar contratos fijos: {e}")
+            logger.error(f"✗ Error al consultar contratos fijos para división: {e}")
             self.postgres_session.rollback()
             raise
     
     def get_current_assignments(self) -> Dict[int, Set[int]]:
         """
-        Obtiene las asignaciones actuales desde contract_advisors.
+        Obtiene las asignaciones actuales desde contract_advisors para los 8 usuarios.
         
         Returns:
             Diccionario {user_id: set(contract_ids)}
         """
-        logger.info("Consultando asignaciones actuales...")
+        logger.info("Consultando asignaciones actuales para división...")
         
-        current_assignments = {user_id: set() for user_id in settings.USER_IDS}
+        current_assignments = {user_id: set() for user_id in settings.DIVISION_USER_IDS}
         
         try:
             assignments = self.postgres_session.query(ContractAdvisor).filter(
-                ContractAdvisor.user_id.in_(settings.USER_IDS)
+                ContractAdvisor.user_id.in_(settings.DIVISION_USER_IDS)
             ).all()
             
             for assignment in assignments:
                 if assignment.user_id in current_assignments:
                     current_assignments[assignment.user_id].add(assignment.contract_id)
             
-            logger.info(f"✓ Asignaciones actuales: Usuario 45: {len(current_assignments[45])}, Usuario 81: {len(current_assignments[81])}")
+            logger.info(f"✓ Asignaciones actuales para división:")
+            for user_id in settings.DIVISION_USER_IDS:
+                logger.info(f"  - Usuario {user_id}: {len(current_assignments[user_id])} contratos")
             
             return current_assignments
         
         except Exception as e:
-            logger.error(f"✗ Error al consultar asignaciones actuales: {e}")
+            logger.error(f"✗ Error al consultar asignaciones actuales para división: {e}")
             raise
     
-    def clean_assignments(self, fixed_contracts: Dict[int, Set[int]]) -> Dict[str, int]:
+    def get_contracts_for_division(self) -> List[Dict]:
         """
-        DEPRECATED: Este método ya NO elimina asignaciones.
-        Los contratos asignados se mantienen permanentemente.
-        Solo retorna estadísticas en 0.
-        
-        Args:
-            fixed_contracts: Diccionario de contratos fijos por usuario
+        Obtiene contratos con 1 a 60 días de atraso desde MySQL.
+        Reutiliza la lógica de ContractService pero con diferentes parámetros.
         
         Returns:
-            Diccionario con estadísticas de limpieza (siempre en 0)
+            Lista de diccionarios con contract_id y days_overdue
         """
-        logger.info("Verificando asignaciones existentes (sin eliminar)...")
-        
-        stats = {
-            'deleted_total': 0,
-            'deleted_cobyser': 0,
-            'deleted_serlefin': 0,
-            'protected_fixed': 0
-        }
-        
         logger.info(
-            "✓ Los contratos asignados se mantienen permanentemente. "
-            "No se eliminan asignaciones."
+            f"Consultando contratos con {settings.DIVISION_MIN_DAYS} a "
+            f"{settings.DIVISION_MAX_DAYS} días de atraso..."
         )
         
-        return stats
+        try:
+            # Usar el método existente pero con parámetros de división
+            contracts = self.contract_service.get_contracts_with_arrears(
+                min_days=settings.DIVISION_MIN_DAYS,
+                max_days=settings.DIVISION_MAX_DAYS
+            )
+            
+            logger.info(
+                f"✓ Contratos encontrados para división: {len(contracts)}"
+            )
+            
+            return contracts
+        
+        except Exception as e:
+            logger.error(f"✗ Error al consultar contratos para división: {e}")
+            raise
     
     def balance_assignments(
         self, 
@@ -276,20 +245,16 @@ class AssignmentService:
         current_assignments: Dict[int, Set[int]]
     ) -> tuple[Dict[int, List[int]], Dict[int, int]]:
         """
-        Balancea SOLO contratos NUEVOS (no asignados) considerando contratos fijos.
-        El objetivo es que el TOTAL (fijos + nuevos) esté en proporción 60/40:
-        - Usuario 81 (SERLEFIN): 60% del total
-        - Usuario 45 (COBYSER): 40% del total
+        Balancea SOLO contratos NUEVOS (no asignados) de forma EQUITATIVA entre 8 usuarios.
+        Cada usuario recibe aproximadamente 1/8 de los contratos nuevos.
         
         IMPORTANTE: NO elimina contratos ya asignados. Solo agrega nuevos.
         
         Lógica:
-        1. Contar contratos fijos actuales por usuario
-        2. Calcular cuántos contratos NUEVOS necesita cada uno para alcanzar 60/40
-        3. Asignar contratos fijos que no estén asignados
-        4. Identificar contratos NUEVOS (no asignados a ninguna casa)
-        5. Ordenar contratos nuevos por días de atraso (mayor a menor)
-        6. Dividir compensando por contratos fijos para lograr 60/40 total
+        1. Asignar contratos fijos que no estén asignados
+        2. Identificar contratos NUEVOS (no asignados a ningún usuario)
+        3. Ordenar contratos nuevos por días de atraso (mayor a menor)
+        4. Dividir equitativamente entre los 8 usuarios (round-robin)
         
         Args:
             contracts_with_days: Lista de diccionarios con contract_id y days_overdue
@@ -300,63 +265,59 @@ class AssignmentService:
             Tupla: (Diccionario {user_id: [contract_ids]}, Diccionario {contract_id: days_overdue})
         """
         logger.info(
-            f"Iniciando balanceo de contratos NUEVOS considerando contratos fijos "
-            f"para lograr balance 60/40 TOTAL..."
+            f"Iniciando balanceo equitativo de contratos NUEVOS entre "
+            f"{len(settings.DIVISION_USER_IDS)} usuarios..."
         )
         
-        new_assignments = {45: [], 81: []}
+        new_assignments = {user_id: [] for user_id in settings.DIVISION_USER_IDS}
         contracts_days_map = {}
         
         # Crear mapeo de días de atraso
         for c in contracts_with_days:
             contracts_days_map[c['contract_id']] = c['days_overdue']
         
-        # Crear set de contratos VÁLIDOS (solo los del rango 61-210 días)
+        # Crear set de contratos VÁLIDOS (solo los del rango 1-60 días)
         valid_contract_ids = set(c['contract_id'] for c in contracts_with_days)
         
-        # Filtrar current_assignments para SOLO incluir contratos del rango válido (61-210 días)
-        # Esto evita que contratos de OTROS rangos (0-60 días, >210 días, etc.) afecten el balance
+        # Filtrar current_assignments para SOLO incluir contratos del rango válido (1-60 días)
+        # Esto evita que contratos de OTROS rangos (0 días, 61-210 días, etc.) afecten el balance
         current_assignments_in_range = {}
-        for user_id in settings.USER_IDS:
+        for user_id in settings.DIVISION_USER_IDS:
             current_assignments_in_range[user_id] = current_assignments[user_id] & valid_contract_ids
         
         # Obtener TODOS los contratos ya asignados EN EL RANGO (cualquier usuario)
         all_currently_assigned = set()
-        for user_id in settings.USER_IDS:
+        for user_id in settings.DIVISION_USER_IDS:
             all_currently_assigned.update(current_assignments_in_range[user_id])
         
         # Contar contratos fijos detectados automáticamente
-        fixed_auto_45 = len(fixed_contracts[45])
-        fixed_auto_81 = len(fixed_contracts[81])
-        
-        # Contar contratos EN EL RANGO (fijos automáticos + fijos manuales + otros)
-        current_total_45_in_range = len(current_assignments_in_range[45])
-        current_total_81_in_range = len(current_assignments_in_range[81])
-        total_currently_assigned = current_total_45_in_range + current_total_81_in_range
-        
-        # Contratos TOTALES (todos los rangos) solo para información
-        current_total_45_all = len(current_assignments[45])
-        current_total_81_all = len(current_assignments[81])
+        total_fixed_auto = sum(len(fixed_contracts[uid]) for uid in settings.DIVISION_USER_IDS)
+        # Contar TODOS los contratos actuales EN EL RANGO (fijos automáticos + fijos manuales + otros)
+        total_currently_assigned = len(all_currently_assigned)
         
         logger.info(
-            f"Total contratos con 61-210 días: {len(contracts_with_days)}"
+            f"Total contratos con {settings.DIVISION_MIN_DAYS}-"
+            f"{settings.DIVISION_MAX_DAYS} días: {len(contracts_with_days)}"
         )
         logger.info(
-            f"Contratos ya asignados EN EL RANGO 61-210 (se mantienen): {len(all_currently_assigned)}"
+            f"Contratos ya asignados EN EL RANGO 1-60 días (se mantienen): {total_currently_assigned}"
         )
         logger.info(
-            f"Contratos FIJOS automáticos - COBYSER: {fixed_auto_45}, SERLEFIN: {fixed_auto_81}"
+            f"Contratos FIJOS automáticos detectados: {total_fixed_auto}"
         )
-        logger.info(
-            f"Contratos EN RANGO 61-210 - COBYSER: {current_total_45_in_range} "
-            f"(+{current_total_45_all - current_total_45_in_range} fuera de rango), "
-            f"SERLEFIN: {current_total_81_in_range} "
-            f"(+{current_total_81_all - current_total_81_in_range} fuera de rango)"
-        )
+        logger.info("Desglose por usuario (SOLO contratos 1-60 días):")
+        for user_id in settings.DIVISION_USER_IDS:
+            fixed_auto = len(fixed_contracts[user_id])
+            current_in_range = len(current_assignments_in_range[user_id])
+            current_total_all_ranges = len(current_assignments[user_id])
+            logger.info(
+                f"  Usuario {user_id}: {fixed_auto} auto-fijos, {current_in_range} en rango 1-60 días "
+                f"(+{current_total_all_ranges - current_in_range} fuera de rango)"
+            )
         
         # Paso 0: EXCLUIR contratos ya asignados Y contratos fijos
         all_fixed_contracts = set()
-        for user_id in settings.USER_IDS:
+        for user_id in settings.DIVISION_USER_IDS:
             all_fixed_contracts.update(fixed_contracts[user_id])
         
         # Contratos NUEVOS = no asignados y no fijos existentes
@@ -372,7 +333,7 @@ class AssignmentService:
         
         # Paso 1: Asignar contratos fijos que no estén asignados
         logger.info("Paso 1: Asignando contratos fijos no asignados...")
-        for user_id in settings.USER_IDS:
+        for user_id in settings.DIVISION_USER_IDS:
             fixed_not_assigned = (
                 fixed_contracts[user_id] - current_assignments_in_range[user_id]
             )
@@ -386,11 +347,11 @@ class AssignmentService:
                     f"contratos fijos agregados"
                 )
         
-        # Paso 2: Calcular distribución compensando por contratos actuales
+        # Paso 2: Dividir equitativamente contratos nuevos basado en balance actual
         if contracts_new:
             logger.info(
-                f"Paso 2: Balanceando {len(contracts_new)} contratos NUEVOS "
-                f"para lograr 60/40 considerando contratos ya asignados..."
+                f"Paso 2: Ordenando {len(contracts_new)} contratos NUEVOS "
+                f"por días de atraso y dividiendo equitativamente..."
             )
             
             # Ordenar por días de atraso descendente
@@ -400,66 +361,46 @@ class AssignmentService:
                 reverse=True
             )
             
-            total_new = len(sorted_contracts)
-            
-            # Calcular cuántos contratos debería tener cada usuario en TOTAL (actuales EN RANGO + nuevos)
-            # para lograr 60/40 - SOLO cuenta contratos del rango 61-210 días
-            total_contracts_target = total_currently_assigned + total_new
-            target_81 = int(total_contracts_target * 0.6)  # 60% para SERLEFIN
-            target_45 = total_contracts_target - target_81  # 40% para COBYSER
-            
-            # Calcular cuántos NUEVOS necesita cada uno para alcanzar el objetivo
-            needs_81 = max(0, target_81 - current_total_81_in_range)
-            needs_45 = max(0, target_45 - current_total_45_in_range)
-            
-            logger.info(
-                f"  Objetivo TOTAL (actuales EN RANGO + nuevos): SERLEFIN={target_81} (60%), COBYSER={target_45} (40%)"
-            )
-            logger.info(
-                f"  Ya tienen EN RANGO: SERLEFIN={current_total_81_in_range}, COBYSER={current_total_45_in_range}"
-            )
-            logger.info(
-                f"  Necesitan NUEVOS: SERLEFIN={needs_81}, COBYSER={needs_45}"
-            )
-            
-            # Verificar si hay suficientes contratos nuevos
-            if needs_81 + needs_45 > total_new:
-                # No hay suficientes contratos para ambos, distribuir lo que hay proporcionalmente
-                logger.warning(
-                    f"  ⚠️  Solo hay {total_new} contratos nuevos pero se necesitan {needs_81 + needs_45}. "
-                    f"Distribuyendo proporcionalmente..."
+# BALANCE EQUITATIVO: Calcular contratos EN RANGO 1-60 días por usuario
+            # Incluye: SOLO contratos del rango 1-60 días + fijos que se van a asignar ahora
+            # NO incluye contratos de otros rangos (0 días, 61-210 días, etc.)
+            current_counts = {}
+            for user_id in settings.DIVISION_USER_IDS:
+                # Contar SOLO contratos EN RANGO (manuales + automáticos) + fijos nuevos
+                current_counts[user_id] = (
+                    len(current_assignments_in_range[user_id]) + 
+                    len(new_assignments[user_id])
                 )
-                ratio_81 = needs_81 / (needs_81 + needs_45) if (needs_81 + needs_45) > 0 else 0.6
-                split_point = int(total_new * ratio_81)
-            else:
-                # Hay suficientes contratos, asignar según necesidad
-                split_point = needs_81
             
-            # Asignar a Usuario 81 (SERLEFIN)
-            for contract in sorted_contracts[:split_point]:
-                new_assignments[81].append(contract['contract_id'])
+            logger.info("  Balance actual por usuario (SOLO rango 1-60 días + fijos nuevos):")
+            for user_id in settings.DIVISION_USER_IDS:
+                fixed_auto = len(fixed_contracts[user_id])
+                current_in_range = len(current_assignments_in_range[user_id])
+                logger.info(
+                    f"    Usuario {user_id}: {current_counts[user_id]} totales en rango = "
+                    f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {len(new_assignments[user_id])} fijos nuevos"
+                )
             
-            # Asignar a Usuario 45 (COBYSER)
-            for contract in sorted_contracts[split_point:]:
-                new_assignments[45].append(contract['contract_id'])
-            
-            # Mostrar resultado del balanceo
-            total_final_81 = current_total_81_in_range + len(new_assignments[81])
-            total_final_45 = current_total_45_in_range + len(new_assignments[45])
-            total_final = total_final_81 + total_final_45
-            
-            if total_final > 0:
-                pct_81 = (total_final_81 / total_final) * 100
-                pct_45 = (total_final_45 / total_final) * 100
+            # Asignar cada contrato al usuario que tiene MENOS contratos
+            # Esto garantiza distribución equitativa (máximo 1 de diferencia)
+            for contract in sorted_contracts:
+                # Encontrar usuario con menor cantidad de contratos
+                min_user = min(current_counts.keys(), key=lambda u: current_counts[u])
                 
-                logger.info(f"  Resultado TOTAL después del balanceo (SOLO rango 61-210):")
+                # Asignar contrato a ese usuario
+                new_assignments[min_user].append(contract['contract_id'])
+                
+                # Actualizar contador
+                current_counts[min_user] += 1
+            
+            logger.info("  Balance FINAL por usuario (después de asignar nuevos):")
+            for user_id in settings.DIVISION_USER_IDS:
+                fixed_auto = len(fixed_contracts[user_id])
+                current_in_range = len(current_assignments_in_range[user_id])
+                nuevos = len(new_assignments[user_id])
                 logger.info(
-                    f"    - SERLEFIN: {total_final_81} contratos ({pct_81:.1f}%) = "
-                    f"{current_total_81_in_range} actuales en rango ({fixed_auto_81} auto-fijos) + {len(new_assignments[81])} nuevos"
-                )
-                logger.info(
-                    f"    - COBYSER: {total_final_45} contratos ({pct_45:.1f}%) = "
-                    f"{current_total_45_in_range} actuales en rango ({fixed_auto_45} auto-fijos) + {len(new_assignments[45])} nuevos"
+                    f"    Usuario {user_id}: {current_counts[user_id]} totales en rango 1-60 = "
+                    f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {nuevos} nuevos"
                 )
         else:
             logger.info(
@@ -467,25 +408,15 @@ class AssignmentService:
             )
         
         # Calcular estadísticas
-        total_45 = len(new_assignments[45])
-        total_81 = len(new_assignments[81])
-        total_nuevos = total_45 + total_81
-        
-        if total_nuevos > 0:
-            porcentaje_45 = (total_45 / total_nuevos) * 100
-            porcentaje_81 = (total_81 / total_nuevos) * 100
-        else:
-            porcentaje_45 = porcentaje_81 = 0
-        
         logger.info(f"✓ Balanceo completado (SOLO contratos nuevos):")
-        logger.info(
-            f"  - Usuario 81 (SERLEFIN): {total_81} contratos "
-            f"({porcentaje_81:.1f}%)"
-        )
-        logger.info(
-            f"  - Usuario 45 (COBYSER): {total_45} contratos "
-            f"({porcentaje_45:.1f}%)"
-        )
+        total_nuevos = 0
+        for user_id in settings.DIVISION_USER_IDS:
+            count = len(new_assignments[user_id])
+            total_nuevos += count
+            porcentaje = (count / len(contracts_new) * 100) if contracts_new else 0
+            logger.info(
+                f"  - Usuario {user_id}: {count} contratos ({porcentaje:.1f}%)"
+            )
         logger.info(f"  - Total nuevos asignados: {total_nuevos} contratos")
         logger.info(
             f"  - Contratos previamente asignados (mantenidos): "
@@ -504,16 +435,22 @@ class AssignmentService:
             assignments: Diccionario {user_id: [contract_ids]}
         
         Returns:
-            Estadísticas de inserción
+            Estadísticas de inserción por usuario
         """
-        logger.info("Guardando nuevas asignaciones...")
+        logger.info("Guardando nuevas asignaciones de división...")
         
-        stats = {'inserted_total': 0, 'inserted_cobyser': 0, 'inserted_serlefin': 0}
+        stats = {
+            'inserted_total': 0,
+        }
+        # Agregar stats por usuario
+        for user_id in settings.DIVISION_USER_IDS:
+            stats[f'inserted_user_{user_id}'] = 0
+            
         new_assignments = {}  # Para registrar en historial
         
         try:
             # OPTIMIZACIÓN: Obtener TODOS los contratos ya asignados de una sola vez
-            all_contract_ids = set()  # Usar set para evitar duplicados
+            all_contract_ids = set()
             for contract_ids in assignments.values():
                 all_contract_ids.update(contract_ids)
             
@@ -524,8 +461,6 @@ class AssignmentService:
                 ContractAdvisor.contract_id.in_(all_contract_ids)
             ).all()
             
-            # Crear set de contract_ids ya asignados para búsqueda rápida
-            # NOTA: La constraint es UNIQUE(contract_id), un contrato solo puede estar asignado UNA VEZ
             existing_contract_ids = set(row[0] for row in existing_assignments)
             logger.info(f"Encontrados {len(existing_contract_ids)} contratos ya asignados en BD")
             
@@ -534,7 +469,6 @@ class AssignmentService:
                 new_assignments[user_id] = []
                 
                 for contract_id in contract_ids:
-                    # Verificación en memoria (muy rápida)
                     if contract_id not in existing_contract_ids:
                         new_assignment = ContractAdvisor(
                             contract_id=contract_id,
@@ -544,30 +478,25 @@ class AssignmentService:
                         new_assignments[user_id].append(contract_id)
                         
                         stats['inserted_total'] += 1
-                        
-                        # Clasificar por casa de cobranza
-                        if user_id in settings.COBYSER_USERS:
-                            stats['inserted_cobyser'] += 1
-                        elif user_id in settings.SERLEFIN_USERS:
-                            stats['inserted_serlefin'] += 1
+                        stats[f'inserted_user_{user_id}'] += 1
             
-            logger.info(f"Insertando {stats['inserted_total']} nuevas asignaciones...")
+            logger.info(f"Insertando {stats['inserted_total']} nuevas asignaciones de división...")
             self.postgres_session.commit()
             
             # Registrar en historial con Fecha Inicial
-            logger.info("Registrando asignaciones en historial con Fecha Inicial...")
+            logger.info("Registrando asignaciones de división en historial...")
             history_stats = self.history_service.register_assignments(new_assignments)
             
-            logger.info(f"✓ Asignaciones guardadas:")
+            logger.info(f"✓ Asignaciones de división guardadas:")
             logger.info(f"  - Total: {stats['inserted_total']}")
-            logger.info(f"  - COBYSER: {stats['inserted_cobyser']}")
-            logger.info(f"  - SERLEFIN: {stats['inserted_serlefin']}")
+            for user_id in settings.DIVISION_USER_IDS:
+                logger.info(f"  - Usuario {user_id}: {stats[f'inserted_user_{user_id}']} contratos")
             logger.info(f"  - Historial registrado: {history_stats['total_registered']} registros")
             
             return stats
         
         except Exception as e:
-            logger.error(f"✗ Error al guardar asignaciones: {e}")
+            logger.error(f"✗ Error al guardar asignaciones de división: {e}")
             self.postgres_session.rollback()
             raise
     
@@ -576,29 +505,29 @@ class AssignmentService:
         Asegura que TODOS los contratos fijos estén insertados en contract_advisors.
         Si un contrato fijo NO está asignado, lo inserta automáticamente.
         
-        IMPORTANTE: La tabla contract_advisors tiene constraint UNIQUE(contract_id),
-        por lo que un contrato solo puede estar asignado a UN usuario.
-        
         Args:
             fixed_contracts: Diccionario {user_id: set(contract_ids)}
         
         Returns:
             Estadísticas de contratos fijos insertados
         """
-        logger.info("Verificando que todos los contratos fijos estén asignados...")
+        logger.info("Verificando que todos los contratos fijos de división estén asignados...")
         
-        stats = {'inserted_total': 0, 'inserted_cobyser': 0, 'inserted_serlefin': 0, 'already_assigned': 0}
+        stats = {'inserted_total': 0, 'already_assigned': 0}
+        for user_id in settings.DIVISION_USER_IDS:
+            stats[f'inserted_user_{user_id}'] = 0
+            
         new_fixed_assignments = {}
         
         try:
-            # Paso 1: Obtener TODOS los contratos ya asignados (sin importar usuario)
+            # Obtener TODOS los contratos ya asignados
             all_assigned = self.postgres_session.query(ContractAdvisor.contract_id).all()
             existing_contract_ids = set([row[0] for row in all_assigned])
             
             logger.info(f"Contratos ya asignados en sistema: {len(existing_contract_ids)}")
             
-            # Paso 2: Para cada usuario (solo 45 y 81), identificar contratos fijos NO asignados
-            for user_id in settings.USER_IDS:  # Solo 45 y 81
+            # Para cada usuario de división, identificar contratos fijos NO asignados
+            for user_id in settings.DIVISION_USER_IDS:
                 user_fixed_contracts = fixed_contracts.get(user_id, set())
                 
                 if not user_fixed_contracts:
@@ -619,45 +548,40 @@ class AssignmentService:
                         )
                         self.postgres_session.add(new_assignment)
                         stats['inserted_total'] += 1
+                        stats[f'inserted_user_{user_id}'] += 1
                         
-                        # Agregar a existing para evitar duplicados en otros usuarios
+                        # Agregar a existing para evitar duplicados
                         existing_contract_ids.add(contract_id)
-                        
-                        # Clasificar por usuario
-                        if user_id == 45:
-                            stats['inserted_cobyser'] += 1
-                        elif user_id == 81:
-                            stats['inserted_serlefin'] += 1
                 else:
-                    # Contar cuántos de sus fijos ya están asignados
                     already = user_fixed_contracts & existing_contract_ids
                     stats['already_assigned'] += len(already)
             
             if stats['inserted_total'] > 0:
                 self.postgres_session.commit()
                 
-                # Registrar en historial con Fecha Inicial
-                logger.info("Registrando contratos fijos en historial...")
+                # Registrar en historial
+                logger.info("Registrando contratos fijos de división en historial...")
                 history_stats = self.history_service.register_assignments(new_fixed_assignments)
                 
-                logger.info(f"✓ Contratos fijos insertados:")
+                logger.info(f"✓ Contratos fijos de división insertados:")
                 logger.info(f"  - Total: {stats['inserted_total']}")
-                logger.info(f"  - COBYSER: {stats['inserted_cobyser']}")
-                logger.info(f"  - SERLEFIN: {stats['inserted_serlefin']}")
+                for user_id in settings.DIVISION_USER_IDS:
+                    if stats[f'inserted_user_{user_id}'] > 0:
+                        logger.info(f"  - Usuario {user_id}: {stats[f'inserted_user_{user_id}']} contratos")
                 logger.info(f"  - Historial: {history_stats['total_registered']} registros")
             else:
-                logger.info(f"✓ Todos los contratos fijos ya están asignados ({stats['already_assigned']} contratos)")
+                logger.info(f"✓ Todos los contratos fijos de división ya están asignados ({stats['already_assigned']} contratos)")
             
             return stats
         
         except Exception as e:
-            logger.error(f"✗ Error al asegurar contratos fijos: {e}")
+            logger.error(f"✗ Error al asegurar contratos fijos de división: {e}")
             self.postgres_session.rollback()
             raise
     
-    def execute_assignment_process(self) -> Dict:
+    def execute_division_process(self) -> Dict:
         """
-        Ejecuta el proceso completo de asignación de contratos.
+        Ejecuta el proceso completo de división de contratos a 8 usuarios.
         
         IMPORTANTE: NO elimina contratos. Solo agrega nuevos.
         
@@ -665,16 +589,17 @@ class AssignmentService:
         1. Obtener contratos fijos desde managements
         2. Asegurar que contratos fijos estén insertados en contract_advisors
         3. Obtener asignaciones actuales
-        4. Consultar contratos con 61-210 días de atraso
-        5. Balancear SOLO contratos NUEVOS (no asignados)
+        4. Consultar contratos con 1-60 días de atraso
+        5. Balancear SOLO contratos NUEVOS (no asignados) equitativamente
         6. Guardar asignaciones con historial
         
         Returns:
             Diccionario con resultados completos del proceso
         """
         logger.info("=" * 80)
-        logger.info("INICIANDO PROCESO DE ASIGNACIÓN DE CONTRATOS")
+        logger.info("INICIANDO PROCESO DE DIVISIÓN DE CONTRATOS (8 USUARIOS)")
         logger.info("MODO: Solo asignación de nuevos contratos (sin eliminar)")
+        logger.info("RANGO: Día 1 al 60 de atraso")
         logger.info("=" * 80)
         
         results = {
@@ -682,7 +607,6 @@ class AssignmentService:
             'fixed_contracts': {},
             'fixed_inserted_stats': {},
             'contracts_to_assign': [],
-            'clean_stats': {},
             'balance_stats': {},
             'insert_stats': {},
             'final_assignments': {},
@@ -705,18 +629,12 @@ class AssignmentService:
             # 3. Obtener asignaciones actuales
             current_assignments = self.get_current_assignments()
             
-            # 4. Obtener contratos entre 61 y 210 días de atraso
-            contracts_with_arrears = (
-                self.contract_service.get_contracts_with_arrears()
-            )
+            # 4. Obtener contratos entre 1 y 60 días de atraso
+            contracts_with_arrears = self.get_contracts_for_division()
             contract_ids = [c['contract_id'] for c in contracts_with_arrears]
             results['contracts_to_assign'] = contract_ids
             
-            # 5. NO hacemos limpieza (deprecated)
-            clean_stats = self.clean_assignments(fixed_contracts)
-            results['clean_stats'] = clean_stats
-            
-            # 6. Balanceo SOLO de contratos nuevos
+            # 5. Balanceo SOLO de contratos nuevos
             new_assignments, contracts_days_map = self.balance_assignments(
                 contracts_with_arrears,
                 fixed_contracts,
@@ -727,96 +645,23 @@ class AssignmentService:
             }
             results['contracts_days_map'] = contracts_days_map
             
-            # 7. Guardar asignaciones
+            # 6. Guardar asignaciones
             insert_stats = self.save_assignments(new_assignments)
             results['insert_stats'] = insert_stats
             
-            # 8. Resultado final
+            # 7. Resultado final
             results['final_assignments'] = {
                 k: v for k, v in new_assignments.items()
             }
             results['success'] = True
             
             logger.info("=" * 80)
-            logger.info("✓ PROCESO DE ASIGNACIÓN COMPLETADO EXITOSAMENTE")
+            logger.info("✓ PROCESO DE DIVISIÓN DE CONTRATOS COMPLETADO EXITOSAMENTE")
             logger.info("=" * 80)
             
-            # 9. Generar y enviar informes por correo electrónico
-            try:
-                logger.info("📧 Generando y enviando informes por correo...")
-                report_result = self.generate_and_send_reports()
-                results['report_sent'] = report_result
-            except Exception as report_error:
-                logger.error(f"⚠️ Error generando/enviando informes: {report_error}")
-                results['report_sent'] = False
-                results['report_error'] = str(report_error)
-            
         except Exception as e:
-            logger.error(f"✗ Error en el proceso de asignación: {e}")
+            logger.error(f"✗ Error en el proceso de división de contratos: {e}")
             results['error'] = str(e)
             raise
         
         return results
-    
-    def generate_and_send_reports(self) -> bool:
-        """
-        Genera informes de asignación y los envía por correo electrónico.
-        
-        Returns:
-            bool: True si se generaron y enviaron exitosamente
-        """
-        try:
-            from app.services.report_service_extended import report_service_extended
-            from app.services.email_service import email_service
-            
-            # Calcular métricas de distribución
-            metrics = report_service_extended.calculate_distribution_metrics()
-            
-            if not metrics or metrics.get('total', 0) == 0:
-                logger.warning("No hay contratos asignados para generar informes")
-                return False
-            
-            logger.info(f"📊 Métricas: Serlefin {metrics['serlefin_percent']}% | Cobyser {metrics['cobyser_percent']}%")
-            
-            # Generar informe Serlefin
-            contracts_81 = report_service_extended.get_assigned_contracts(81)
-            file_81, _ = report_service_extended.generate_report_for_user(
-                user_id=81,
-                user_name="Serlefin",
-                contracts=contracts_81
-            )
-            
-            # Generar informe Cobyser
-            contracts_45 = report_service_extended.get_assigned_contracts(45)
-            file_45, _ = report_service_extended.generate_report_for_user(
-                user_id=45,
-                user_name="Cobyser",
-                contracts=contracts_45
-            )
-            
-            if not file_81 and not file_45:
-                logger.error("No se pudieron generar los archivos de informe")
-                return False
-            
-            # Generar HTML de métricas
-            metrics_html = report_service_extended.generate_metrics_html(metrics)
-            
-            # Enviar por correo
-            recipient = "mdeulofeuth@alocredit.co"
-            success = email_service.send_multiple_reports(
-                recipient=recipient,
-                serlefin_file=file_81 if file_81 else "",
-                cobyser_file=file_45 if file_45 else "",
-                metrics_html=metrics_html
-            )
-            
-            if success:
-                logger.info(f"✅ Informes enviados exitosamente a {recipient}")
-            else:
-                logger.warning("⚠️ Los informes se generaron pero no se enviaron por correo")
-            
-            return success
-            
-        except Exception as e:
-            logger.error(f"Error en generate_and_send_reports: {e}")
-            return False

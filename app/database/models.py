@@ -19,31 +19,38 @@ class ContractAdvisor(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     contract_id = Column(Integer, nullable=False, index=True)
-    advisor_id = Column(Integer, nullable=False, index=True)
-    assigned_date = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, nullable=False, index=True)
     
     def __repr__(self):
-        return f"<ContractAdvisor(contract_id={self.contract_id}, advisor_id={self.advisor_id})>"
+        return f"<ContractAdvisor(contract_id={self.contract_id}, user_id={self.user_id})>"
 
 
 class Management(Base):
     """
     Modelo para la tabla alocreditindicators.managements en PostgreSQL.
-    Contiene información de gestiones y efectos (como 'pago_total').
+    Contiene información de gestiones y efectos (como 'pago_total' y 'acuerdo_de_pago').
     """
     __tablename__ = "managements"
     __table_args__ = {"schema": "alocreditindicators"}
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     contract_id = Column(Integer, nullable=False, index=True)
-    advisor_id = Column(Integer, nullable=True)
-    user_id = Column(Integer, nullable=True, index=True)  # Alias de advisor_id
+    user_id = Column(Integer, nullable=True, index=True)
+    name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
+    dni = Column(String(50), nullable=True)
+    management_date = Column(DateTime, nullable=True, index=True)
+    action = Column(String(100), nullable=True)
+    result = Column(String(100), nullable=True)
     effect = Column(String(100), nullable=True, index=True)
-    management_date = Column(DateTime, nullable=True)
-    notes = Column(Text, nullable=True)
+    promise_date = Column(Date, nullable=True, index=True)
+    contact_phone = Column(String(50), nullable=True)
+    summary = Column(Text, nullable=True)
+    is_bulk_import = Column(Integer, nullable=True)
+    product_id = Column(Integer, nullable=True)
     
     def __repr__(self):
-        return f"<Management(contract_id={self.contract_id}, effect={self.effect})>"
+        return f"<Management(id={self.id}, contract_id={self.contract_id}, effect={self.effect})>"
 
 
 class ContractAdvisorHistory(Base):

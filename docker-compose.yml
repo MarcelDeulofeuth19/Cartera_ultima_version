@@ -33,6 +33,10 @@ services:
       
       # Configuración de negocio
       - DAYS_THRESHOLD=61
+      - MAX_DAYS_THRESHOLD=210
+      - EFFECT_ACUERDO_PAGO=acuerdo_de_pago
+      - EFFECT_PAGO_TOTAL=pago_total
+      - PAGO_TOTAL_VALIDITY_DAYS=30
       - FIXED_CONTRACT_EFFECT=pago_total
       
       # Rutas

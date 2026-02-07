@@ -40,7 +40,22 @@ class Settings(BaseSettings):
     # Para retrocompatibilidad (usuarios principales de cada casa)
     USER_IDS: List[int] = [45, 81]
     
-    DAYS_THRESHOLD: int = 61  # Días de atraso mínimos
+    # División de contratos (días 1-60) - 14 usuarios
+    DIVISION_USER_IDS: List[int] = [4, 7, 36, 58, 60, 62, 71, 77, 89, 90, 91, 114, 116, 113]
+    DIVISION_MIN_DAYS: int = 1  # Días de atraso mínimos para división
+    DIVISION_MAX_DAYS: int = 60  # Días de atraso máximos para división
+    
+    DAYS_THRESHOLD: int = 61  # Días de atraso mínimos (casas de cobranza)
+    MAX_DAYS_THRESHOLD: int = 210  # Días de atraso máximos (casas de cobranza)
+    
+    # Efectos que determinan contratos fijos
+    EFFECT_ACUERDO_PAGO: str = "acuerdo_de_pago"
+    EFFECT_PAGO_TOTAL: str = "pago_total"
+    
+    # Período de validez para pago_total (en días)
+    PAGO_TOTAL_VALIDITY_DAYS: int = 30
+    
+    # Para retrocompatibilidad
     FIXED_CONTRACT_EFFECT: str = "pago_total"
     
     # Configuración de reportes
@@ -48,6 +63,10 @@ class Settings(BaseSettings):
     REPORT_FILE_USER_45: str = "asignacion_45.txt"
     REPORT_FILE_USER_81: str = "asignacion_81.txt"
     REPORT_EXCEL_FIXED: str = "reporte_fijos_efect.xlsx"
+    
+    # Reportes para división de contratos (8 usuarios)
+    REPORT_FILE_DIVISION: str = "division_contratos_{user_id}.txt"
+    REPORT_EXCEL_DIVISION: str = "reporte_division_contratos.xlsx"
     
     # File Lock para singleton
     LOCK_FILE: str = "assignment_process.lock"

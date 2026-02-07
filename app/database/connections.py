@@ -4,7 +4,7 @@ Implementa el patrón de sesiones con SQLAlchemy.
 """
 import logging
 from contextlib import contextmanager
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool
 from app.core.config import settings
@@ -52,7 +52,7 @@ class DatabaseManager:
             )
             # Test de conexión
             with self._mysql_engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
             logger.info("✓ Conexión a MySQL establecida correctamente")
         except Exception as e:
             logger.error(f"✗ Error al conectar con MySQL: {e}")
@@ -75,7 +75,7 @@ class DatabaseManager:
             )
             # Test de conexión
             with self._postgres_engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
             logger.info("✓ Conexión a PostgreSQL establecida correctamente")
         except Exception as e:
             logger.error(f"✗ Error al conectar con PostgreSQL: {e}")

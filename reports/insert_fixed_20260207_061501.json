@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "message": "Contratos fijos manuales procesados: 262 insertados, 232 ya existentes (Cobyser: 11, Serlefin: 251)",
+  "execution_time": 4.076811,
+  "results": {
+    "total_provided": 494,
+    "already_assigned": 232,
+    "in_managements": 487,
+    "inserted": 262,
+    "by_user": {
+      "45": {
+        "provided": 79,
+        "inserted": 11,
+        "skipped": 68
+      },
+      "81": {
+        "provided": 415,
+        "inserted": 251,
+        "skipped": 164
+      }
+    }
+  },
+  "reports": null,
+  "timestamp": "2026-02-07T11:15:01.774889"
+}
