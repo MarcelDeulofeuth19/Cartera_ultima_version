@@ -3,7 +3,7 @@ Panel visual protegido por hash para configurar parametros de asignacion.
 """
 import html
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -13,6 +13,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from app.core.config import settings
+from app.data.manual_fixed_contracts import MANUAL_FIXED_CONTRACTS
 from app.runtime_config.service import RuntimeConfigService
 from app.services.email_service import email_service
 from app.services.report_service_extended import report_service_extended
@@ -185,8 +186,9 @@ def _send_audit_change_notification(
 
 
 def _load_assignment_history_report(
-    start_date: date = ASSIGNMENT_HISTORY_START_DATE,
+    start_date: Optional[date] = ASSIGNMENT_HISTORY_START_DATE,
     only_fixed: bool = False,
+    fixed_contract_ids: Optional[set[int]] = None,
 ) -> dict:
     """Carga reporte de asignados/eliminados desde contract_advisors_history."""
     conn = psycopg2.connect(
@@ -214,13 +216,32 @@ def _load_assignment_history_report(
                 ELSE 'ELIMINADO'
             END AS estado
         FROM alocreditindicators.contract_advisors_history h
-        WHERE h."Fecha Inicial"::date >= %s
+        WHERE 1=1
         """
-        if only_fixed:
+        params = []
+        if start_date is not None:
+            query += '\n AND h."Fecha Inicial"::date >= %s'
+            params.append(start_date)
+        if fixed_contract_ids is not None:
+            if not fixed_contract_ids:
+                rows = []
+                start_date_label = start_date.isoformat() if start_date else "TODAS"
+                return {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "start_date_label": start_date_label,
+                    "total_rows": 0,
+                    "asignados": 0,
+                    "eliminados": 0,
+                    "only_fixed": only_fixed,
+                    "rows": rows,
+                }
+            fixed_ids_sql = ",".join(str(int(contract_id)) for contract_id in sorted(fixed_contract_ids))
+            query += f"\n AND h.contract_id IN ({fixed_ids_sql})"
+        elif only_fixed:
             query += "\n AND UPPER(COALESCE(h.tipo, '')) LIKE 'FIJO%%'"
         query += "\n ORDER BY h.\"Fecha Inicial\" DESC, h.id DESC"
         with conn.cursor() as cur:
-            cur.execute(query, (start_date,))
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -228,14 +249,84 @@ def _load_assignment_history_report(
     asignados = sum(1 for row in rows if row[10] == "ASIGNADO")
     eliminados = sum(1 for row in rows if row[10] == "ELIMINADO")
 
+    start_date_label = start_date.isoformat() if start_date else "TODAS"
+
     return {
-        "start_date": start_date.isoformat(),
+        "start_date": start_date.isoformat() if start_date else None,
+        "start_date_label": start_date_label,
         "total_rows": len(rows),
         "asignados": asignados,
         "eliminados": eliminados,
         "only_fixed": only_fixed,
         "rows": rows,
     }
+
+
+def _load_fixed_contract_ids() -> set[int]:
+    """Obtiene contratos fijos vigentes (manuales + managements) para 45/81."""
+    manual_fixed_ids: set[int] = {
+        int(contract_id)
+        for contract_ids in MANUAL_FIXED_CONTRACTS.values()
+        for contract_id in contract_ids
+    }
+
+    all_users = sorted({
+        *settings.COBYSER_USERS,
+        *settings.SERLEFIN_USERS,
+    })
+    users_sql = ",".join(str(int(user_id)) for user_id in all_users)
+
+    today = datetime.now().date()
+    validity_start = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) - timedelta(days=settings.PAGO_TOTAL_VALIDITY_DAYS)
+
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+    try:
+        query = f"""
+        SELECT DISTINCT m.contract_id
+        FROM alocreditindicators.managements m
+        WHERE m.user_id IN ({users_sql})
+          AND (
+            (
+              m.effect = %s
+              AND m.promise_date IS NOT NULL
+              AND m.promise_date >= %s
+            )
+            OR
+            (
+              m.effect = %s
+              AND m.management_date IS NOT NULL
+              AND m.management_date >= %s
+            )
+          )
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                query,
+                (
+                    settings.EFFECT_ACUERDO_PAGO,
+                    today,
+                    settings.EFFECT_PAGO_TOTAL,
+                    validity_start,
+                ),
+            )
+            management_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    management_fixed_ids = {
+        int(row[0])
+        for row in management_rows
+        if row and row[0] is not None
+    }
+    return manual_fixed_ids | management_fixed_ids
 
 
 def _render_assignment_history_report_html(
@@ -281,11 +372,14 @@ def _render_assignment_history_report_html(
         )
 
     if not table_rows:
-        table_rows = (
-            "<tr><td colspan='11'>Sin registros para Fecha Inicial desde "
-            + html.escape(str(report["start_date"]))
-            + ".</td></tr>"
-        )
+        if report.get("start_date"):
+            table_rows = (
+                "<tr><td colspan='11'>Sin registros para Fecha Inicial desde "
+                + html.escape(str(report["start_date"]))
+                + ".</td></tr>"
+            )
+        else:
+            table_rows = "<tr><td colspan='11'>Sin registros.</td></tr>"
 
     back_path = f"/{panel_hash}"
 
@@ -346,7 +440,7 @@ def _render_assignment_history_report_html(
   <main class="wrap">
     <section class="head">
       <h2 style="margin:0 0 8px">{html.escape(title)}</h2>
-      <div class="kpi">Fecha Inicial desde: <strong>{html.escape(str(report["start_date"]))}</strong></div>
+      <div class="kpi">Rango Fecha Inicial: <strong>{html.escape(str(report["start_date_label"]))}</strong></div>
       <div class="kpi">Total filas: <strong>{report["total_rows"]}</strong></div>
       <div class="kpi">Asignados: <strong>{report["asignados"]}</strong></div>
       <div class="kpi">Eliminados: <strong>{report["eliminados"]}</strong></div>
@@ -426,7 +520,7 @@ def _render_panel_html(
     download_serlefin_path = f"/{panel_hash}/reports/serlefin"
     download_cobyser_path = f"/{panel_hash}/reports/cobyser"
     assignment_history_path = f"/{panel_hash}/history/asignados-eliminados?start_date=2026-02-28"
-    fixed_history_path = f"/{panel_hash}/history/fijos?start_date=2026-02-28"
+    fixed_history_path = f"/{panel_hash}/history/fijos"
 
     return f"""
 <!doctype html>
@@ -751,7 +845,7 @@ def _render_panel_html(
         <a class="btn btn-link btn-alt" href="{html.escape(download_serlefin_path)}">Descargar Serlefin</a>
         <a class="btn btn-link btn-alt" href="{html.escape(download_cobyser_path)}">Descargar Cobyser</a>
         <a class="btn btn-link" href="{html.escape(assignment_history_path)}">Ver Asignados/Eliminados (desde 2026-02-28)</a>
-        <a class="btn btn-link" href="{html.escape(fixed_history_path)}">Ver Fijos (desde 2026-02-28)</a>
+        <a class="btn btn-link" href="{html.escape(fixed_history_path)}">Ver Fijos (todos)</a>
       </article>
     </section>
 
@@ -857,18 +951,15 @@ async def assignment_history_report(panel_hash: str, start_date: str = "2026-02-
 
 
 @app.get("/{panel_hash}/history/fijos", response_class=HTMLResponse, include_in_schema=False)
-async def fixed_history_report(panel_hash: str, start_date: str = "2026-02-28"):
+async def fixed_history_report(panel_hash: str):
     _assert_hash(panel_hash)
 
     try:
-        parsed_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="start_date debe tener formato YYYY-MM-DD")
-
-    try:
+        fixed_contract_ids = _load_fixed_contract_ids()
         report = _load_assignment_history_report(
-            start_date=parsed_start_date,
+            start_date=None,
             only_fixed=True,
+            fixed_contract_ids=fixed_contract_ids,
         )
         return HTMLResponse(
             _render_assignment_history_report_html(
