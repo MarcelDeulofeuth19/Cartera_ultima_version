@@ -49,10 +49,10 @@ class LockStatusResponse(BaseModel):
     description="""
     Ejecuta el proceso completo de asignación de contratos:
     1. Adquiere lock para garantizar una única instancia
-    2. Consulta contratos entre 61 y 210 días de atraso
+    2. Consulta contratos en el rango dinámico configurado
     3. Identifica contratos fijos (effect='pago_total' o 'acuerdo_de_pago')
-    4. Limpia asignaciones de contratos con 0-60 días (excepto fijos)
-    5. Balancea y asigna contratos 60/40 (SERLEFIN 60%, COBYSER 40%)
+    4. Limpia asignaciones con >tope o con 0 dias sin pago_total/acuerdo_de_pago
+    5. Balancea y asigna contratos según porcentaje dinámico (SERLEFIN/COBYSER)
     6. Genera reportes TXT y Excel
     
     Este endpoint garantiza transaccionalidad y manejo de errores robusto.

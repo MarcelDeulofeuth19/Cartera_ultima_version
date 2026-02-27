@@ -1,6 +1,28 @@
-version: '3.8'
+﻿services:
+  # ==========================================
+  # Base interna para configuracion y auditoria
+  # Puerto host: 5559
+  # ==========================================
+  internal-config-db:
+    image: postgres:15-alpine
+    container_name: asignacion-internal-config-db
+    environment:
+      - POSTGRES_DB=internal_config_db
+      - POSTGRES_USER=internal_config_user
+      - POSTGRES_PASSWORD=internal_config_pass
+    ports:
+      - "5559:5432"
+    volumes:
+      - internal-config-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U internal_config_user -d internal_config_db"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    networks:
+      - app-network
 
-services:
   # ================================
   # Servicio Principal: API FastAPI
   # ================================
@@ -10,58 +32,74 @@ services:
       dockerfile: Dockerfile
     container_name: asignacion-contratos-api
     ports:
-      - "8000:8000"  # Puerto único para Swagger UI y API
+      - "8000:8000"
     environment:
-      # Configuración de la aplicación
-      - APP_NAME=Sistema de Asignación de Contratos
+      # Configuracion de la aplicacion
+      - APP_NAME=Sistema de Asignacion de Contratos
       - APP_VERSION=1.0.0
       - DEBUG=False
-      
-      # MySQL (alocreditprod) - Configuración externa
+
+      # MySQL (alocreditprod) - Configuracion externa
       - MYSQL_HOST=57.130.40.1
       - MYSQL_PORT=3306
       - MYSQL_USER=alo_estadisticas
       - MYSQL_PASSWORD=4K9ml8e2vqlj
       - MYSQL_DATABASE=alocreditprod
-      
-      # PostgreSQL (nexus_db) - Configuración externa
+
+      # PostgreSQL (nexus_db) - Configuracion externa
       - POSTGRES_HOST=3.95.195.63
       - POSTGRES_PORT=5432
       - POSTGRES_USER=nexus_dev_84
       - POSTGRES_PASSWORD=ZehK7wQTpq95eU8r
       - POSTGRES_DATABASE=nexus_db
-      
-      # Configuración de negocio
+
+      # Configuracion de negocio
       - DAYS_THRESHOLD=61
-      - MAX_DAYS_THRESHOLD=210
+      - MAX_DAYS_THRESHOLD=209
       - EFFECT_ACUERDO_PAGO=acuerdo_de_pago
       - EFFECT_PAGO_TOTAL=pago_total
       - PAGO_TOTAL_VALIDITY_DAYS=30
       - FIXED_CONTRACT_EFFECT=pago_total
-      
+      - AUTO_ASSIGNMENT_ENABLED=True
+      - AUTO_ASSIGNMENT_HOUR=6
+      - AUTO_ASSIGNMENT_MINUTE=0
+      - AUTO_ASSIGNMENT_TIMEZONE=America/Bogota
+      - AUTO_ASSIGNMENT_WEEKDAYS=0,1,2,3,4
+      - NOTIFICATION_RECIPIENTS=emduelofeuth@alocredit.co
+
+      # Configuracion dinamica (persistida en DB interna)
+      - DEFAULT_SERLEFIN_PERCENT=60
+      - DEFAULT_COBYSER_PERCENT=40
+      - DEFAULT_ASSIGNMENT_MIN_DAYS=61
+      - DEFAULT_ASSIGNMENT_MAX_DAYS=209
+      - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
+      - ADMIN_PANEL_HASH=3e63c8d8d94f44288b5f90d2c16fd101
+      - ADMIN_DEFAULT_AUDIT_ACTOR=mdeulofeuth@alocredit.co
+
       # Rutas
       - REPORTS_DIR=/app/reports
       - LOCK_FILE=assignment_process.lock
-    
+
     volumes:
-      # Persistir reportes generados
       - ./reports:/app/reports
-      # Persistir logs
       - ./logs:/app/logs
-    
+
+    depends_on:
+      internal-config-db:
+        condition: service_healthy
+
     restart: unless-stopped
-    
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-    
+
     networks:
       - app-network
-    
-    # Configuración de recursos (opcional, ajustar según necesidad)
+
     deploy:
       resources:
         limits:
@@ -71,6 +109,44 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  # ==============================================
+  # Panel visual protegido por hash
+  # Puerto host: 9007
+  # ==============================================
+  admin-panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: asignacion-contratos-admin-panel
+    command: ["uvicorn", "admin_panel:app", "--host", "0.0.0.0", "--port", "9007"]
+    ports:
+      - "9007:9007"
+    environment:
+      - DEBUG=False
+      - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
+      - ADMIN_PANEL_HASH=3e63c8d8d94f44288b5f90d2c16fd101
+      - ADMIN_DEFAULT_AUDIT_ACTOR=mdeulofeuth@alocredit.co
+      - DEFAULT_SERLEFIN_PERCENT=60
+      - DEFAULT_COBYSER_PERCENT=40
+      - DEFAULT_ASSIGNMENT_MIN_DAYS=61
+      - DEFAULT_ASSIGNMENT_MAX_DAYS=209
+
+    depends_on:
+      internal-config-db:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9007/_health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - app-network
+
 # ================================
 # Redes
 # ================================
@@ -79,8 +155,10 @@ networks:
     driver: bridge
 
 # ================================
-# Volúmenes (opcional, para persistencia)
+# Volumenes
 # ================================
 volumes:
   reports-data:
   logs-data:
+  internal-config-db-data:
+

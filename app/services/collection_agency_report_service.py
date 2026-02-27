@@ -1,6 +1,6 @@
-"""
+﻿"""
 Servicio para generar informes de casa de cobranza (SERLEFIN y COBYSER)
-Mantiene la lógica original exacta del script
+Mantiene la lÃ³gica original exacta del script
 """
 import logging
 import os
@@ -23,29 +23,29 @@ class CollectionAgencyReportService:
         self.postgres_session = postgres_session
         self.mysql_session = mysql_session
         
-        # Configuración de bases de datos (exacta del script original)
+        # ConfiguraciÃ³n de bases de datos (exacta del script original)
         self.DB_CONFIG_PROD = {
-            'host': '3.95.195.63',
-            'user': 'nexus_dev_84',
-            'password': 'ZehK7wQTpq95eU8r',
-            'database': 'alocreditprod',
-            'port': 5432,
-            'options': '-csearch_path=alocreditprod',
+            'host': settings.REPORTS_EXT_PROD_HOST,
+            'user': settings.REPORTS_EXT_PROD_USER,
+            'password': settings.REPORTS_EXT_PROD_PASSWORD,
+            'database': settings.REPORTS_EXT_PROD_DATABASE,
+            'port': settings.REPORTS_EXT_PROD_PORT,
+            'options': f"-csearch_path={settings.REPORTS_EXT_PROD_SCHEMA}",
             'driver': 'psycopg2'
         }
         
         self.DB_CONFIG_IND = {
-            'host': '3.95.195.63',
-            'user': 'nexus',
-            'password': 'AloCredit2025**',
-            'database': 'nexus_db',
-            'port': 5432,
-            'options': '-csearch_path=alocreditindicators',
+            'host': settings.REPORTS_EXT_IND_HOST,
+            'user': settings.REPORTS_EXT_IND_USER,
+            'password': settings.REPORTS_EXT_IND_PASSWORD,
+            'database': settings.REPORTS_EXT_IND_DATABASE,
+            'port': settings.REPORTS_EXT_IND_PORT,
+            'options': f"-csearch_path={settings.REPORTS_EXT_IND_SCHEMA}",
             'driver': 'psycopg2'
         }
     
     def _get_assigned_contracts(self, user_id: int) -> List[int]:
-        """Obtener contratos asignados a un usuario específico"""
+        """Obtener contratos asignados a un usuario especÃ­fico"""
         query = f"""
         SELECT contract_id
         FROM contract_advisors
@@ -384,7 +384,7 @@ ORDER BY c.id ASC;
         
         # GENERAR INFORME USER 81 (SERLEFIN)
         if contracts_81:
-            logger.info(f"\n📊 Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
+            logger.info(f"\nðŸ“Š Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
             lista_contratos_81 = ",".join(str(x) for x in contracts_81)
             
             conn_prod = psycopg2.connect(
@@ -414,14 +414,14 @@ ORDER BY c.id ASC;
                 df_81.to_excel(file_path_81, index=False)
                 
                 result['serlefin_file'] = file_path_81
-                logger.info(f"✅ INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
+                logger.info(f"âœ… INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
                 
             finally:
                 conn_prod.close()
         
         # GENERAR INFORME USER 45 (COBYSER)
         if contracts_45:
-            logger.info(f"\n📊 Generando reporte para USER 45 - COBYSER ({len(contracts_45)} contratos)...")
+            logger.info(f"\nðŸ“Š Generando reporte para USER 45 - COBYSER ({len(contracts_45)} contratos)...")
             lista_contratos_45 = ",".join(str(x) for x in contracts_45)
             
             conn_prod = psycopg2.connect(
@@ -455,10 +455,11 @@ ORDER BY c.id ASC;
                 df_45.to_excel(file_path_45, index=False)
                 
                 result['cobyser_file'] = file_path_45
-                logger.info(f"✅ INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")
+                logger.info(f"âœ… INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")
                 
             finally:
                 conn_prod.close()
         
-        logger.info("\n🔥 PROCESO COMPLETADO")
+        logger.info("\nðŸ”¥ PROCESO COMPLETADO")
         return result
+

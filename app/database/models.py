@@ -70,6 +70,12 @@ class ContractAdvisorHistory(Base):
     contract_id = Column(Integer, nullable=False, index=True)
     fecha_inicial = Column("Fecha Inicial", DateTime, nullable=False)
     fecha_terminal = Column("Fecha Terminal", DateTime, nullable=True)
+    tipo = Column(String(50), nullable=True, index=True)
+    dpd_inicial = Column(String(20), nullable=True)
+    # La BD historica usa nombres distintos en estas columnas.
+    dpd_terminal = Column("dpd_final", String(20), nullable=True)
+    dias_atraso_inicial = Column("dias_atraso_incial", Integer, nullable=True)
+    dias_atraso_terminal = Column(Integer, nullable=True)
     
     def __repr__(self):
         return f"<ContractAdvisorHistory(contract_id={self.contract_id}, user_id={self.user_id})>"

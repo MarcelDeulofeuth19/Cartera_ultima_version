@@ -2,18 +2,43 @@
 Script para verificar el constraint UNIQUE de la tabla contract_advisors
 """
 import asyncio
+import os
 import asyncpg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 async def check_contract_advisors_schema():
     """
     Verifica el esquema de container_advisors incluyendo constraints
     """
+    host = os.getenv("POSTGRES_HOST")
+    user = os.getenv("POSTGRES_USER")
+    password = os.getenv("POSTGRES_PASSWORD")
+    database = os.getenv("POSTGRES_DATABASE")
+    port = int(os.getenv("POSTGRES_PORT", "5432"))
+
+    missing = [
+        key
+        for key, value in {
+            "POSTGRES_HOST": host,
+            "POSTGRES_USER": user,
+            "POSTGRES_PASSWORD": password,
+            "POSTGRES_DATABASE": database,
+        }.items()
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Faltan variables de entorno requeridas: " + ", ".join(missing)
+        )
+
     conn = await asyncpg.connect(
-        host="3.95.195.63",
-        port=5432,
-        user="nexus_dev_84",
-        password="ZehK7wQTpq95eU8r",
-        database="nexus_db"
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
     )
     
     try:

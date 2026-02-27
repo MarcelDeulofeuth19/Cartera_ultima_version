@@ -1,32 +1,55 @@
+﻿"""
+Script de prueba para verificar la nueva lÃ³gica de bases fijas.
+Muestra los contratos que serÃ­an considerados fijos segÃºn los nuevos filtros.
 """
-Script de prueba para verificar la nueva lógica de bases fijas.
-Muestra los contratos que serían considerados fijos según los nuevos filtros.
-"""
+import os
 import sys
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-# Configuración de conexión PostgreSQL
-POSTGRES_URL = "postgresql+psycopg2://nexus_dev_84:ZehK7wQTpq95eU8r@3.95.195.63:5432/nexus_db"
+load_dotenv()
+
+# ConfiguraciÃ³n de conexiÃ³n PostgreSQL
+required_env = {
+    "POSTGRES_USER": os.getenv("POSTGRES_USER"),
+    "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD"),
+    "POSTGRES_HOST": os.getenv("POSTGRES_HOST"),
+    "POSTGRES_DATABASE": os.getenv("POSTGRES_DATABASE"),
+}
+missing_env = [key for key, value in required_env.items() if not value]
+if missing_env:
+    raise RuntimeError(
+        "Faltan variables de entorno requeridas: " + ", ".join(missing_env)
+    )
+
+POSTGRES_URL = (
+    "postgresql+psycopg2://"
+    f"{required_env['POSTGRES_USER']}:"
+    f"{required_env['POSTGRES_PASSWORD']}@"
+    f"{required_env['POSTGRES_HOST']}:"
+    f"{os.getenv('POSTGRES_PORT', '5432')}/"
+    f"{required_env['POSTGRES_DATABASE']}"
+)
 
 def test_fixed_contracts_logic():
-    """Prueba la lógica de contratos fijos sin modificar la base de datos"""
+    """Prueba la lÃ³gica de contratos fijos sin modificar la base de datos"""
     
     engine = create_engine(POSTGRES_URL)
     Session = sessionmaker(bind=engine)
     session = Session()
     
     print("=" * 100)
-    print("PRUEBA DE LÓGICA DE BASES FIJAS")
+    print("PRUEBA DE LÃ“GICA DE BASES FIJAS")
     print("=" * 100)
     print()
     
     today = datetime.now().date()
     validity_date = datetime.now() - timedelta(days=30)
     
-    print(f"📅 Fecha actual: {today}")
-    print(f"📅 Fecha límite pago_total: {validity_date.date()}")
+    print(f"ðŸ“… Fecha actual: {today}")
+    print(f"ðŸ“… Fecha lÃ­mite pago_total: {validity_date.date()}")
     print()
     
     # Consulta para obtener registros con effect relevantes
@@ -39,9 +62,9 @@ def test_fixed_contracts_logic():
             management_date,
             promise_date,
             CASE 
-                WHEN effect = 'acuerdo_de_pago' AND promise_date >= CURRENT_DATE THEN 'VÁLIDO'
+                WHEN effect = 'acuerdo_de_pago' AND promise_date >= CURRENT_DATE THEN 'VÃLIDO'
                 WHEN effect = 'acuerdo_de_pago' AND promise_date < CURRENT_DATE THEN 'EXPIRADO'
-                WHEN effect = 'pago_total' AND management_date >= (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'VÁLIDO'
+                WHEN effect = 'pago_total' AND management_date >= (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'VÃLIDO'
                 WHEN effect = 'pago_total' AND management_date < (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'EXPIRADO'
                 ELSE 'N/A'
             END as status
@@ -53,7 +76,7 @@ def test_fixed_contracts_logic():
     result = session.execute(query)
     rows = result.fetchall()
     
-    # Estadísticas
+    # EstadÃ­sticas
     stats = {
         'acuerdo_pago_valid': 0,
         'acuerdo_pago_expired': 0,
@@ -67,7 +90,7 @@ def test_fixed_contracts_logic():
     COBYSER_USERS = [45, 46, 47, 48, 49, 50, 51]
     SERLEFIN_USERS = [81, 82, 83, 84, 85, 86, 102, 103]
     
-    print("📊 ANÁLISIS DE REGISTROS:")
+    print("ðŸ“Š ANÃLISIS DE REGISTROS:")
     print("-" * 100)
     
     for row in rows:
@@ -79,16 +102,16 @@ def test_fixed_contracts_logic():
         promise_date = row[5]
         status = row[6]
         
-        # Contar estadísticas
+        # Contar estadÃ­sticas
         if effect == 'acuerdo_de_pago':
-            if status == 'VÁLIDO':
+            if status == 'VÃLIDO':
                 stats['acuerdo_pago_valid'] += 1
                 is_fixed = True
             else:
                 stats['acuerdo_pago_expired'] += 1
                 is_fixed = False
         elif effect == 'pago_total':
-            if status == 'VÁLIDO':
+            if status == 'VÃLIDO':
                 stats['pago_total_valid'] += 1
                 is_fixed = True
             else:
@@ -113,45 +136,45 @@ def test_fixed_contracts_logic():
     
     print()
     print("=" * 100)
-    print("📈 RESUMEN DE RESULTADOS:")
+    print("ðŸ“ˆ RESUMEN DE RESULTADOS:")
     print("=" * 100)
     print()
     
-    print("🔵 ACUERDO DE PAGO:")
-    print(f"   ✅ Válidos (promise_date >= hoy):     {stats['acuerdo_pago_valid']:4}")
-    print(f"   ❌ Expirados (promise_date < hoy):    {stats['acuerdo_pago_expired']:4}")
+    print("ðŸ”µ ACUERDO DE PAGO:")
+    print(f"   âœ… VÃ¡lidos (promise_date >= hoy):     {stats['acuerdo_pago_valid']:4}")
+    print(f"   âŒ Expirados (promise_date < hoy):    {stats['acuerdo_pago_expired']:4}")
     print()
     
-    print("🟢 PAGO TOTAL:")
-    print(f"   ✅ Válidos (≤ 30 días):               {stats['pago_total_valid']:4}")
-    print(f"   ❌ Expirados (> 30 días):             {stats['pago_total_expired']:4}")
+    print("ðŸŸ¢ PAGO TOTAL:")
+    print(f"   âœ… VÃ¡lidos (â‰¤ 30 dÃ­as):               {stats['pago_total_valid']:4}")
+    print(f"   âŒ Expirados (> 30 dÃ­as):             {stats['pago_total_expired']:4}")
     print()
     
-    print("🏢 CONTRATOS FIJOS POR CASA DE COBRANZA:")
-    print(f"   📌 COBYSER (Usuario 45):              {len(fixed_contracts_45):4} contratos")
-    print(f"   📌 SERLEFIN (Usuario 81):             {len(fixed_contracts_81):4} contratos")
-    print(f"   📌 TOTAL:                             {len(fixed_contracts_45) + len(fixed_contracts_81):4} contratos")
+    print("ðŸ¢ CONTRATOS FIJOS POR CASA DE COBRANZA:")
+    print(f"   ðŸ“Œ COBYSER (Usuario 45):              {len(fixed_contracts_45):4} contratos")
+    print(f"   ðŸ“Œ SERLEFIN (Usuario 81):             {len(fixed_contracts_81):4} contratos")
+    print(f"   ðŸ“Œ TOTAL:                             {len(fixed_contracts_45) + len(fixed_contracts_81):4} contratos")
     print()
     
     print("=" * 100)
     
     # Mostrar algunos contratos de ejemplo
     if fixed_contracts_45:
-        print(f"\n🔍 Ejemplos de contratos fijos COBYSER (primeros 10):")
+        print(f"\nðŸ” Ejemplos de contratos fijos COBYSER (primeros 10):")
         for contract_id in list(fixed_contracts_45)[:10]:
             print(f"   - Contrato: {contract_id}")
     
     if fixed_contracts_81:
-        print(f"\n🔍 Ejemplos de contratos fijos SERLEFIN (primeros 10):")
+        print(f"\nðŸ” Ejemplos de contratos fijos SERLEFIN (primeros 10):")
         for contract_id in list(fixed_contracts_81)[:10]:
             print(f"   - Contrato: {contract_id}")
     
     session.close()
-    print("\n✅ Prueba completada exitosamente")
+    print("\nâœ… Prueba completada exitosamente")
 
 if __name__ == "__main__":
     try:
         test_fixed_contracts_logic()
     except Exception as e:
-        print(f"\n❌ Error durante la prueba: {e}", file=sys.stderr)
+        print(f"\nâŒ Error durante la prueba: {e}", file=sys.stderr)
         sys.exit(1)

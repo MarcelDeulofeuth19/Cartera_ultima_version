@@ -18,21 +18,21 @@ class ReportServiceExtended:
     
     def __init__(self):
         self.db_config_prod = {
-            'host': '3.95.195.63',
-            'user': 'nexus_dev_84',
-            'password': 'ZehK7wQTpq95eU8r',
-            'database': 'alocreditprod',
-            'port': 5432,
-            'options': '-csearch_path=alocreditprod'
+            'host': settings.REPORTS_EXT_PROD_HOST,
+            'user': settings.REPORTS_EXT_PROD_USER,
+            'password': settings.REPORTS_EXT_PROD_PASSWORD,
+            'database': settings.REPORTS_EXT_PROD_DATABASE,
+            'port': settings.REPORTS_EXT_PROD_PORT,
+            'options': f"-csearch_path={settings.REPORTS_EXT_PROD_SCHEMA}"
         }
         
         self.db_config_ind = {
-            'host': '3.95.195.63',
-            'user': 'nexus',
-            'password': 'AloCredit2025**',
-            'database': 'nexus_db',
-            'port': 5432,
-            'options': '-csearch_path=alocreditindicators'
+            'host': settings.REPORTS_EXT_IND_HOST,
+            'user': settings.REPORTS_EXT_IND_USER,
+            'password': settings.REPORTS_EXT_IND_PASSWORD,
+            'database': settings.REPORTS_EXT_IND_DATABASE,
+            'port': settings.REPORTS_EXT_IND_PORT,
+            'options': f"-csearch_path={settings.REPORTS_EXT_IND_SCHEMA}"
         }
         
         self.reports_dir = Path("reports")
@@ -368,22 +368,34 @@ ORDER BY c.id ASC;
             query = self.generate_detailed_query(lista_contratos)
             df = pd.read_sql(query, conn)
             conn.close()
-            
+
+            # PostgreSQL normaliza a minusculas aliases sin comillas.
+            cols_by_lower = {str(col).lower(): col for col in df.columns}
+
             # Eliminar campos innecesarios
             for col in ['cantidad_cuotas_pagados', 'Marca']:
                 if col in df.columns:
                     df = df.drop(columns=[col])
-            
+
             # Agregar campo "Contrato Fijo"
             manual_fixed = MANUAL_FIXED_CONTRACTS.get(user_id, [])
-            df['Contrato_Fijo'] = df['Contrato_x'].apply(
-                lambda x: 'SI' if x in manual_fixed else 'NO'
-            )
-            
+            contrato_col = cols_by_lower.get('contrato_x')
+            if contrato_col:
+                df['Contrato_Fijo'] = df[contrato_col].apply(
+                    lambda x: 'SI' if x in manual_fixed else 'NO'
+                )
+            else:
+                logger.warning(
+                    "No se encontro columna de contrato para user %s. Se marcara Contrato_Fijo='NO'.",
+                    user_id,
+                )
+                df['Contrato_Fijo'] = 'NO'
+
             # Ajustar comisión para Cobyser (Usuario 45)
             if user_id == 45:
-                if 'Comision' in df.columns:
-                    df['Comision'] = '30%'
+                comision_col = cols_by_lower.get('comision')
+                if comision_col:
+                    df[comision_col] = '30%'
             
             # Agregar campo NIT al inicio
             df.insert(0, 'NIT', '901546410-9')
