@@ -3,11 +3,12 @@ Panel visual protegido por hash para configurar parametros de asignacion.
 """
 import html
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
+import psycopg2
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
@@ -24,6 +25,11 @@ PANEL_HASH = (settings.ADMIN_PANEL_HASH or "").strip().strip("/")
 if not PANEL_HASH:
     PANEL_HASH = "admin-secure"
 AUDITOR_EMAIL = "mdeulofeuth@alocredit.co"
+ASSIGNMENT_HISTORY_START_DATE = date(2026, 2, 28)
+USER_LABELS = {
+    45: "45 Cobyser",
+    81: "81 Serlefin",
+}
 
 app = FastAPI(
     title="Panel de Configuracion de Asignacion",
@@ -43,6 +49,16 @@ def _format_datetime(value: datetime | None) -> str:
     if not value:
         return "-"
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_user_label(user_id: int | None) -> str:
+    if user_id is None:
+        return "-"
+    try:
+        user_id_int = int(user_id)
+    except (TypeError, ValueError):
+        return str(user_id)
+    return USER_LABELS.get(user_id_int, str(user_id_int))
 
 
 def _reports_dir() -> Path:
@@ -168,6 +184,204 @@ def _send_audit_change_notification(
     )
 
 
+def _load_assignment_history_report(
+    start_date: date = ASSIGNMENT_HISTORY_START_DATE,
+    only_fixed: bool = False,
+) -> dict:
+    """Carga reporte de asignados/eliminados desde contract_advisors_history."""
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+    try:
+        query = """
+        SELECT
+            h.id,
+            h.user_id,
+            h.contract_id,
+            h."Fecha Inicial" AS fecha_inicial,
+            h."Fecha Terminal" AS fecha_terminal,
+            h.tipo,
+            h.dpd_inicial,
+            h.dpd_final,
+            h.dias_atraso_incial,
+            h.dias_atraso_terminal,
+            CASE
+                WHEN h."Fecha Terminal" IS NULL THEN 'ASIGNADO'
+                ELSE 'ELIMINADO'
+            END AS estado
+        FROM alocreditindicators.contract_advisors_history h
+        WHERE h."Fecha Inicial"::date >= %s
+        """
+        if only_fixed:
+            query += "\n AND UPPER(COALESCE(h.tipo, '')) LIKE 'FIJO%%'"
+        query += "\n ORDER BY h.\"Fecha Inicial\" DESC, h.id DESC"
+        with conn.cursor() as cur:
+            cur.execute(query, (start_date,))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    asignados = sum(1 for row in rows if row[10] == "ASIGNADO")
+    eliminados = sum(1 for row in rows if row[10] == "ELIMINADO")
+
+    return {
+        "start_date": start_date.isoformat(),
+        "total_rows": len(rows),
+        "asignados": asignados,
+        "eliminados": eliminados,
+        "only_fixed": only_fixed,
+        "rows": rows,
+    }
+
+
+def _render_assignment_history_report_html(
+    panel_hash: str,
+    report: dict,
+    title: str = "Informe Asignados y Eliminados",
+) -> str:
+    """Renderiza HTML del informe de asignados/eliminados (solo contract history)."""
+    table_rows = ""
+    for row in report["rows"]:
+        (
+            row_id,
+            user_id,
+            contract_id,
+            fecha_inicial,
+            fecha_terminal,
+            tipo,
+            dpd_inicial,
+            dpd_final,
+            dias_inicial,
+            dias_terminal,
+            estado,
+        ) = row
+
+        fecha_inicial_txt = _format_datetime(fecha_inicial)
+        fecha_terminal_txt = _format_datetime(fecha_terminal)
+        user_label = _format_user_label(user_id)
+
+        table_rows += (
+            "<tr>"
+            f"<td>{row_id}</td>"
+            f"<td>{html.escape(user_label)}</td>"
+            f"<td>{contract_id}</td>"
+            f"<td>{html.escape(fecha_inicial_txt)}</td>"
+            f"<td>{html.escape(fecha_terminal_txt)}</td>"
+            f"<td>{html.escape(str(tipo or '-'))}</td>"
+            f"<td>{html.escape(str(dpd_inicial or '-'))}</td>"
+            f"<td>{html.escape(str(dpd_final or '-'))}</td>"
+            f"<td>{html.escape(str(dias_inicial if dias_inicial is not None else '-'))}</td>"
+            f"<td>{html.escape(str(dias_terminal if dias_terminal is not None else '-'))}</td>"
+            f"<td>{html.escape(estado)}</td>"
+            "</tr>"
+        )
+
+    if not table_rows:
+        table_rows = (
+            "<tr><td colspan='11'>Sin registros para Fecha Inicial desde "
+            + html.escape(str(report["start_date"]))
+            + ".</td></tr>"
+        )
+
+    back_path = f"/{panel_hash}"
+
+    return f"""
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 20px;
+      font-family: "Sora", "IBM Plex Sans", "Trebuchet MS", sans-serif;
+      background: #f5f2ea;
+      color: #1f2a33;
+    }}
+    .wrap {{ max-width: 1280px; margin: 0 auto; }}
+    .head {{
+      background: #fffef9;
+      border: 1px solid #d8d2c5;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }}
+    .kpi {{
+      display: inline-block;
+      margin-right: 14px;
+      padding: 8px 10px;
+      border: 1px solid #d8d2c5;
+      border-radius: 10px;
+      background: #faf8f1;
+      font-size: 0.9rem;
+    }}
+    .btn {{
+      display: inline-block;
+      text-decoration: none;
+      margin-top: 10px;
+      border-radius: 10px;
+      padding: 9px 12px;
+      background: #0f766e;
+      color: #fff;
+      font-weight: 700;
+    }}
+    .table-wrap {{
+      background: #fffef9;
+      border: 1px solid #d8d2c5;
+      border-radius: 12px;
+      overflow: auto;
+    }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1200px; }}
+    th, td {{ border-bottom: 1px solid #ece7db; text-align: left; padding: 8px 10px; font-size: 0.85rem; }}
+    th {{ background: #fcfbf7; text-transform: uppercase; font-size: 0.75rem; }}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="head">
+      <h2 style="margin:0 0 8px">{html.escape(title)}</h2>
+      <div class="kpi">Fecha Inicial desde: <strong>{html.escape(str(report["start_date"]))}</strong></div>
+      <div class="kpi">Total filas: <strong>{report["total_rows"]}</strong></div>
+      <div class="kpi">Asignados: <strong>{report["asignados"]}</strong></div>
+      <div class="kpi">Eliminados: <strong>{report["eliminados"]}</strong></div>
+      <br />
+      <a class="btn" href="{html.escape(back_path)}">Volver al panel</a>
+    </section>
+
+    <section class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Casa</th>
+            <th>Contrato</th>
+            <th>Fecha Inicial</th>
+            <th>Fecha Terminal</th>
+            <th>Tipo</th>
+            <th>DPD Inicial</th>
+            <th>DPD Final</th>
+            <th>Días Inicial</th>
+            <th>Días Terminal</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {table_rows}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
 def _render_panel_html(
     *,
     panel_hash: str,
@@ -211,6 +425,8 @@ def _render_panel_html(
     action_path = f"/{panel_hash}/save"
     download_serlefin_path = f"/{panel_hash}/reports/serlefin"
     download_cobyser_path = f"/{panel_hash}/reports/cobyser"
+    assignment_history_path = f"/{panel_hash}/history/asignados-eliminados?start_date=2026-02-28"
+    fixed_history_path = f"/{panel_hash}/history/fijos?start_date=2026-02-28"
 
     return f"""
 <!doctype html>
@@ -534,6 +750,8 @@ def _render_panel_html(
         <br />
         <a class="btn btn-link btn-alt" href="{html.escape(download_serlefin_path)}">Descargar Serlefin</a>
         <a class="btn btn-link btn-alt" href="{html.escape(download_cobyser_path)}">Descargar Cobyser</a>
+        <a class="btn btn-link" href="{html.escape(assignment_history_path)}">Ver Asignados/Eliminados (desde 2026-02-28)</a>
+        <a class="btn btn-link" href="{html.escape(fixed_history_path)}">Ver Fijos (desde 2026-02-28)</a>
       </article>
     </section>
 
@@ -616,6 +834,51 @@ async def download_house_report(panel_hash: str, house_key: str):
         )
     except Exception as error:
         logger.error("Error generando/descargando informe %s: %s", house_key, error)
+        query = urlencode({"error": str(error)})
+        return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
+
+
+@app.get("/{panel_hash}/history/asignados-eliminados", response_class=HTMLResponse, include_in_schema=False)
+async def assignment_history_report(panel_hash: str, start_date: str = "2026-02-28"):
+    _assert_hash(panel_hash)
+
+    try:
+        parsed_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date debe tener formato YYYY-MM-DD")
+
+    try:
+        report = _load_assignment_history_report(start_date=parsed_start_date)
+        return HTMLResponse(_render_assignment_history_report_html(panel_hash, report))
+    except Exception as error:
+        logger.error("Error generando informe de asignados/eliminados: %s", error)
+        query = urlencode({"error": str(error)})
+        return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
+
+
+@app.get("/{panel_hash}/history/fijos", response_class=HTMLResponse, include_in_schema=False)
+async def fixed_history_report(panel_hash: str, start_date: str = "2026-02-28"):
+    _assert_hash(panel_hash)
+
+    try:
+        parsed_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date debe tener formato YYYY-MM-DD")
+
+    try:
+        report = _load_assignment_history_report(
+            start_date=parsed_start_date,
+            only_fixed=True,
+        )
+        return HTMLResponse(
+            _render_assignment_history_report_html(
+                panel_hash,
+                report,
+                title="Informe Contratos Fijos",
+            )
+        )
+    except Exception as error:
+        logger.error("Error generando informe de contratos fijos: %s", error)
         query = urlencode({"error": str(error)})
         return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 

@@ -72,13 +72,13 @@ class Settings(BaseSettings):
     LOCK_FILE: str = "assignment_process.lock"
     LOCK_TIMEOUT: int = 300  # 5 minutos de timeout
 
-    # Scheduler automatico de asignacion (L-V 6:00 AM)
+    # Scheduler automatico de asignacion (todos los dias 3:00 AM)
     AUTO_ASSIGNMENT_ENABLED: bool = True
-    AUTO_ASSIGNMENT_HOUR: int = 6
+    AUTO_ASSIGNMENT_HOUR: int = 3
     AUTO_ASSIGNMENT_MINUTE: int = 0
     AUTO_ASSIGNMENT_TIMEZONE: str = "America/Bogota"
     # Python weekday: lunes=0 ... domingo=6
-    AUTO_ASSIGNMENT_WEEKDAYS: str = "0,1,2,3,4"
+    AUTO_ASSIGNMENT_WEEKDAYS: str = "0,1,2,3,4,5,6"
 
     # Correos de notificacion (separados por coma)
     NOTIFICATION_RECIPIENTS: str = "emduelofeuth@alocredit.co"
