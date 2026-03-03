@@ -31,6 +31,7 @@
       context: .
       dockerfile: Dockerfile
     container_name: asignacion-contratos-api
+    user: "0:0"
     ports:
       - "8000:8000"
     environment:
@@ -111,16 +112,17 @@
 
   # ==============================================
   # Panel visual protegido por hash
-  # Puerto host: 9007
+  # Puerto host: 9006
   # ==============================================
   admin-panel:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: asignacion-contratos-admin-panel
+    user: "0:0"
     command: ["uvicorn", "admin_panel:app", "--host", "0.0.0.0", "--port", "9007"]
     ports:
-      - "9007:9007"
+      - "9006:9007"
     environment:
       - DEBUG=False
       - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
