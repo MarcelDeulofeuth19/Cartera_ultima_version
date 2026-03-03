@@ -2061,7 +2061,7 @@ def _render_panel_html(
             </div>
             <div>
               <label for="hist_max_days">Dias max</label>
-              <input id="hist_max_days" name="max_days" type="number" min="0" placeholder="Ej: 209" />
+              <input id="hist_max_days" name="max_days" type="number" min="0" placeholder="Ej: 240" />
             </div>
           </div>
           <button class="btn btn-alt" type="submit">Filtrar historial</button>

@@ -1143,7 +1143,7 @@ class AssignmentService:
         error_message = str(results.get("error") or "").strip()
         report_error = str(results.get("report_error") or "").strip()
 
-        subject = f"[ALOCREDIT] Proceso de asignacion finalizado - {status_label}"
+        subject = f"[ALOCREDIT] Proceso de asignacion automatica finalizado - {status_label}"
 
         error_block = ""
         if error_message:
@@ -1157,6 +1157,8 @@ class AssignmentService:
         <html>
         <body style="font-family:Arial,sans-serif">
           <h2>Proceso de Asignacion Finalizado ({status_label})</h2>
+          <p><strong>Tipo:</strong> Ejecucion automatica programada</p>
+          <p><strong>Horario programado:</strong> {int(settings.AUTO_ASSIGNMENT_HOUR):02d}:{int(settings.AUTO_ASSIGNMENT_MINUTE):02d} ({settings.AUTO_ASSIGNMENT_TIMEZONE})</p>
           <p><strong>Inicio:</strong> {results.get("started_at", "-")}</p>
           <p><strong>Fin:</strong> {results.get("finished_at", "-")}</p>
           <p><strong>Duracion (s):</strong> {results.get("duration_seconds", "-")}</p>
@@ -1176,27 +1178,20 @@ class AssignmentService:
         </html>
         """
 
-        sent_ok = 0
-        for recipient in recipients:
-            if email_service.send_assignment_report(
-                recipient=recipient,
-                subject=subject,
-                body=body,
-                attachments=None,
-            ):
-                sent_ok += 1
-
-        if sent_ok == len(recipients):
+        if email_service.send_assignment_report(
+            recipient=recipients,
+            subject=subject,
+            body=body,
+            attachments=None,
+        ):
             logger.info(
-                "Notificacion de finalizacion enviada a %s/%s destinatarios",
-                sent_ok,
+                "Notificacion de finalizacion enviada en un solo correo a %s destinatarios",
                 len(recipients),
             )
             return True
 
         logger.warning(
-            "Notificacion de finalizacion parcial: %s/%s destinatarios",
-            sent_ok,
+            "No se pudo enviar la notificacion de finalizacion al grupo de %s destinatarios",
             len(recipients),
         )
         return False

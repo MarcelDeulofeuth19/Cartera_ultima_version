@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     DIVISION_MAX_DAYS: int = 60  # DÃ­as de atraso mÃ¡ximos para divisiÃ³n
     
     DAYS_THRESHOLD: int = 61  # DÃ­as de atraso mÃ­nimos (casas de cobranza)
-    MAX_DAYS_THRESHOLD: int = 209  # DÃ­as de atraso mÃ¡ximos (casas de cobranza)
+    MAX_DAYS_THRESHOLD: int = 240  # DÃ­as de atraso mÃ¡ximos (casas de cobranza)
     
     # Efectos que determinan contratos fijos
     EFFECT_ACUERDO_PAGO: str = "acuerdo_de_pago"
@@ -87,9 +87,9 @@ class Settings(BaseSettings):
     LOCK_FILE: str = "assignment_process.lock"
     LOCK_TIMEOUT: int = 300  # 5 minutos de timeout
 
-    # Scheduler automatico de asignacion (martes y jueves 6:00 AM)
+    # Scheduler automatico de asignacion (martes y jueves 7:00 AM)
     AUTO_ASSIGNMENT_ENABLED: bool = True
-    AUTO_ASSIGNMENT_HOUR: int = 6
+    AUTO_ASSIGNMENT_HOUR: int = 7
     AUTO_ASSIGNMENT_MINUTE: int = 0
     AUTO_ASSIGNMENT_TIMEZONE: str = "America/Bogota"
     # Python weekday: lunes=0 ... domingo=6
@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     DEFAULT_SERLEFIN_PERCENT: float = 60.0
     DEFAULT_COBYSER_PERCENT: float = 40.0
     DEFAULT_ASSIGNMENT_MIN_DAYS: int = 61
-    DEFAULT_ASSIGNMENT_MAX_DAYS: int = 209
+    DEFAULT_ASSIGNMENT_MAX_DAYS: int = 240
 
     # Base interna de configuracion/auditoria
     INTERNAL_CONFIG_DATABASE_URL: str = "postgresql+psycopg2://internal_config_user:internal_config_pass@localhost:5559/internal_config_db"

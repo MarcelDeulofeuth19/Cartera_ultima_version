@@ -8,7 +8,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from app.core.config import settings
 
@@ -37,7 +37,7 @@ class EmailService:
 
     def send_assignment_report(
         self,
-        recipient: str,
+        recipient: Union[str, List[str]],
         subject: str,
         body: str,
         attachments: Optional[List[str]] = None,
@@ -46,7 +46,7 @@ class EmailService:
         Envia un correo con informes de asignacion.
 
         Args:
-            recipient: Correo del destinatario
+            recipient: Correo del destinatario o lista de destinatarios
             subject: Asunto del correo
             body: Cuerpo del mensaje (HTML)
             attachments: Lista de rutas de archivos a adjuntar
@@ -55,9 +55,26 @@ class EmailService:
             bool: True si el envio fue exitoso, False en caso contrario
         """
         try:
+            if isinstance(recipient, list):
+                recipients = [
+                    str(value).strip()
+                    for value in recipient
+                    if str(value).strip()
+                ]
+            else:
+                recipients = [
+                    value.strip()
+                    for value in str(recipient or "").split(",")
+                    if value.strip()
+                ]
+
+            if not recipients:
+                logger.warning("No hay destinatarios validos para el correo")
+                return False
+
             msg = MIMEMultipart()
             msg["From"] = self.email_from
-            msg["To"] = recipient
+            msg["To"] = ", ".join(recipients)
             msg["Subject"] = subject
 
             msg.attach(MIMEText(body, "html"))
@@ -85,9 +102,9 @@ class EmailService:
                 server.starttls()
                 server.ehlo(self.helo_name)
                 server.login(self.email_user, self.email_password)
-                server.send_message(msg)
+                server.send_message(msg, to_addrs=recipients)
 
-            logger.info(f"Correo enviado exitosamente a {recipient}")
+            logger.info(f"Correo enviado exitosamente a {', '.join(recipients)}")
             return True
 
         except Exception as error:

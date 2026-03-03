@@ -5,9 +5,10 @@ import psycopg2
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 import logging
 from app.core.config import settings
+from app.core.dpd import get_dpd_range
 from app.data.manual_fixed_contracts import MANUAL_FIXED_CONTRACTS
 
 logger = logging.getLogger(__name__)
@@ -339,7 +340,8 @@ ORDER BY c.id ASC;
         self,
         user_id: int,
         user_name: str,
-        contracts: List[int]
+        contracts: List[int],
+        days_overdue_map: Optional[Dict[int, int]] = None,
     ) -> Tuple[str, pd.DataFrame]:
         """
         Genera reporte detallado para un usuario especÃ­fico
@@ -371,6 +373,12 @@ ORDER BY c.id ASC;
 
             # PostgreSQL normaliza a minusculas aliases sin comillas.
             cols_by_lower = {str(col).lower(): col for col in df.columns}
+
+            # Forzar dias/rango del reporte con la misma logica operativa de asignacion (MySQL).
+            if days_overdue_map is None:
+                days_overdue_map = self._load_operational_days_overdue(contracts)
+
+            self._apply_operational_days_and_ranges(df, cols_by_lower, days_overdue_map)
 
             # Eliminar campos innecesarios
             for col in ['cantidad_cuotas_pagados', 'Marca']:
@@ -420,6 +428,86 @@ ORDER BY c.id ASC;
         except Exception as e:
             logger.error(f"âŒ Error generando reporte para user {user_id}: {e}")
             return None, None
+
+    @staticmethod
+    def _safe_int(value) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    def _load_operational_days_overdue(self, contracts: List[int]) -> Dict[int, int]:
+        """
+        Obtiene dias de atraso con la logica operativa usada por asignacion.
+        """
+        if not contracts:
+            return {}
+
+        try:
+            from app.database.connections import db_manager
+            from app.services.contract_service import ContractService
+
+            with db_manager.get_mysql_session() as mysql_session:
+                contract_service = ContractService(mysql_session)
+                return contract_service.get_days_overdue_for_contracts(
+                    [int(contract_id) for contract_id in contracts]
+                )
+        except Exception as error:
+            logger.warning(
+                "No se pudo cargar dias de atraso operativos para reporte: %s",
+                error,
+            )
+            return {}
+
+    def _apply_operational_days_and_ranges(
+        self,
+        df: pd.DataFrame,
+        cols_by_lower: Dict[str, str],
+        days_overdue_map: Optional[Dict[int, int]],
+    ) -> None:
+        """
+        Reemplaza en el DataFrame de reporte los campos de dias/rango por la
+        misma logica de asignacion operativa.
+        """
+        if not days_overdue_map:
+            return
+
+        contract_col = (
+            cols_by_lower.get("contrato_x")
+            or cols_by_lower.get("contrato")
+            or cols_by_lower.get("contract_id")
+        )
+        if not contract_col:
+            return
+
+        days_col = cols_by_lower.get("dias_iniciales_mes")
+        range_col = (
+            cols_by_lower.get("rango")
+            or cols_by_lower.get("rango dias")
+            or cols_by_lower.get("rango_dias")
+        )
+
+        if not days_col and not range_col:
+            return
+
+        # Mapea contrato -> dias operativos
+        def _resolve_days(contract_value) -> int:
+            contract_id = self._safe_int(contract_value)
+            if contract_id is None:
+                return 0
+            return int(days_overdue_map.get(contract_id, 0))
+
+        contract_days = df[contract_col].apply(_resolve_days)
+
+        if days_col:
+            df[days_col] = contract_days
+
+        if range_col:
+            df[range_col] = contract_days.apply(
+                lambda days: get_dpd_range(int(days)) or "0"
+            )
     
     def calculate_distribution_metrics(self) -> Dict:
         """

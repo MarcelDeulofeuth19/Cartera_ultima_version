@@ -21,7 +21,7 @@ class RuntimeAssignmentConfig(RuntimeConfigBase):
     serlefin_percent = Column(Float, nullable=False, default=60.0)
     cobyser_percent = Column(Float, nullable=False, default=40.0)
     min_days = Column(Integer, nullable=False, default=61)
-    max_days = Column(Integer, nullable=False, default=209)
+    max_days = Column(Integer, nullable=False, default=240)
     updated_by = Column(String(255), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(
