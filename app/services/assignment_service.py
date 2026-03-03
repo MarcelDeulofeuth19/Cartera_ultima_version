@@ -3,13 +3,16 @@ Servicio principal de asignaciÃ³n de contratos.
 Implementa la lÃ³gica de contratos fijos, limpieza y balanceo configurable.
 """
 import logging
+import math
 from datetime import datetime
-from typing import List, Dict, Set, Any
+from typing import List, Dict, Set, Any, Optional, Tuple
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from app.core.config import settings
 from app.core.dpd import ASSIGNMENT_DPD_ORDER, get_assignment_dpd_range, get_dpd_range
 from app.database.models import ContractAdvisor, Management
 from app.runtime_config.service import AssignmentRuntimeConfig, RuntimeConfigService
+from app.services.blacklist_service import blacklist_service
 from app.services.contract_service import ContractService
 from app.services.history_service import HistoryService
 from app.services.manual_fixed_service import ManualFixedService
@@ -23,7 +26,11 @@ class AssignmentService:
     Implementa la lÃ³gica de contratos fijos, limpieza y balanceo.
     """
     
-    def __init__(self, mysql_session: Session, postgres_session: Session):
+    def __init__(
+        self,
+        mysql_session: Optional[Session],
+        postgres_session: Session,
+    ):
         """
         Args:
             mysql_session: SesiÃ³n MySQL para consultar contratos
@@ -31,13 +38,23 @@ class AssignmentService:
         """
         self.mysql_session = mysql_session
         self.postgres_session = postgres_session
-        self.contract_service = ContractService(mysql_session)
+        self.contract_service: Optional[ContractService] = (
+            ContractService(mysql_session) if mysql_session is not None else None
+        )
         self.history_service = HistoryService(postgres_session)
         self.manual_fixed_service = ManualFixedService(postgres_session)
         self.runtime_config_service = RuntimeConfigService()
         
         # Variables de control para balanceo
         self._last_assigned_user = settings.USER_IDS[1]  # Empieza con 81
+
+    def _require_contract_service(self) -> ContractService:
+        """Devuelve ContractService o falla si no hay sesion MySQL."""
+        if self.contract_service is None:
+            raise RuntimeError(
+                "No hay sesion MySQL configurada para esta operacion."
+            )
+        return self.contract_service
 
     @staticmethod
     def _build_weighted_sequence(
@@ -71,6 +88,144 @@ class AssignmentService:
                 count_45 += 1
 
         return sequence
+
+    @staticmethod
+    def _compute_house_quotas(total: int, serlefin_ratio: float) -> Dict[int, int]:
+        """
+        Calcula cuotas finales por casa para mantener proporcion 60/40 (o configurable).
+        """
+        total_int = max(0, int(total))
+        ratio = max(0.0, min(1.0, float(serlefin_ratio)))
+        cobyser_ratio = 1.0 - ratio
+
+        exact_81 = total_int * ratio
+        exact_45 = total_int * cobyser_ratio
+        quota_81 = int(math.floor(exact_81))
+        quota_45 = int(math.floor(exact_45))
+
+        remainder = total_int - (quota_81 + quota_45)
+        if remainder > 0:
+            frac_81 = exact_81 - quota_81
+            frac_45 = exact_45 - quota_45
+            if frac_81 >= frac_45:
+                quota_81 += remainder
+            else:
+                quota_45 += remainder
+
+        return {81: quota_81, 45: quota_45}
+
+    @staticmethod
+    def _build_alternating_user_sequence(
+        total: int,
+        quotas: Dict[int, int],
+        first_user: int = 81,
+    ) -> List[int]:
+        """
+        Crea secuencia alternada 81/45 respetando cuotas finales configuradas.
+        """
+        total_int = max(0, int(total))
+        if total_int == 0:
+            return []
+
+        sequence: List[int] = []
+        assigned = {81: 0, 45: 0}
+        next_user = 81 if first_user not in {45, 81} else first_user
+
+        while len(sequence) < total_int:
+            preferred = next_user
+            alternate = 45 if preferred == 81 else 81
+
+            if assigned[preferred] < int(quotas.get(preferred, 0)):
+                chosen = preferred
+            elif assigned[alternate] < int(quotas.get(alternate, 0)):
+                chosen = alternate
+            else:
+                break
+
+            sequence.append(chosen)
+            assigned[chosen] += 1
+            next_user = alternate
+
+        return sequence
+
+    def _load_contract_blacklist(self) -> Set[int]:
+        """Carga lista negra de contratos desde TXT."""
+        blocked_ids = blacklist_service.load_contract_ids()
+        if blocked_ids:
+            logger.info("Lista negra activa: %s contratos bloqueados", len(blocked_ids))
+        else:
+            logger.info("Lista negra vacia")
+        return blocked_ids
+
+    def enforce_blacklist_on_active_assignments(
+        self,
+        blocked_contract_ids: Set[int],
+    ) -> Dict[str, int]:
+        """
+        Garantiza que contratos bloqueados no permanezcan asignados.
+        """
+        stats = {
+            "blocked_found_active": 0,
+            "removed_from_contract_advisors": 0,
+            "history_closed": 0,
+        }
+        if not blocked_contract_ids:
+            return stats
+
+        try:
+            active_blocked = self.postgres_session.query(
+                ContractAdvisor.user_id,
+                ContractAdvisor.contract_id,
+            ).filter(
+                ContractAdvisor.user_id.in_(settings.USER_IDS),
+                ContractAdvisor.contract_id.in_(blocked_contract_ids),
+            ).all()
+
+            if not active_blocked:
+                return stats
+
+            contracts_removed: Dict[int, List[int]] = {45: [], 81: []}
+            terminal_metadata: Dict[int, Dict[str, Any]] = {}
+
+            for user_id, contract_id in active_blocked:
+                user_id_int = int(user_id)
+                contract_id_int = int(contract_id)
+                if user_id_int not in contracts_removed:
+                    continue
+                contracts_removed[user_id_int].append(contract_id_int)
+                stats["blocked_found_active"] += 1
+                terminal_metadata[contract_id_int] = {
+                    "tipo": "LISTA_NEGRA_REMOVIDO",
+                    "dpd_terminal": None,
+                    "dias_atraso_terminal": None,
+                }
+
+            if stats["blocked_found_active"] == 0:
+                return stats
+
+            deleted_count = self.postgres_session.query(ContractAdvisor).filter(
+                ContractAdvisor.user_id.in_(settings.USER_IDS),
+                ContractAdvisor.contract_id.in_(blocked_contract_ids),
+            ).delete(synchronize_session=False)
+            stats["removed_from_contract_advisors"] = int(deleted_count or 0)
+            self.postgres_session.commit()
+
+            history_stats = self.history_service.close_assignments(
+                contracts_removed=contracts_removed,
+                terminal_metadata=terminal_metadata,
+            )
+            stats["history_closed"] = int(history_stats.get("total_closed", 0))
+
+            logger.warning(
+                "Se removieron contratos bloqueados activos: %s (historial cerrado=%s)",
+                stats["removed_from_contract_advisors"],
+                stats["history_closed"],
+            )
+            return stats
+
+        except Exception:
+            self.postgres_session.rollback()
+            raise
 
     def _load_runtime_assignment_config(self) -> AssignmentRuntimeConfig:
         """
@@ -365,7 +520,7 @@ class AssignmentService:
                 logger.info("No hay contratos asignados para limpiar")
                 return stats
 
-            contracts_days_map = self.contract_service.get_days_overdue_for_contracts(
+            contracts_days_map = self._require_contract_service().get_days_overdue_for_contracts(
                 list(all_assigned_contracts)
             )
 
@@ -452,19 +607,13 @@ class AssignmentService:
     def balance_assignments(
         self,
         contracts_with_days: List[Dict],
-        fixed_contracts: Dict[int, Set[int]],
         current_assignments: Dict[int, Set[int]],
         serlefin_ratio: float,
-        min_days: int,
-        max_days: int,
+        blocked_contract_ids: Optional[Set[int]] = None,
     ) -> tuple[Dict[int, List[int]], Dict[int, int]]:
         """
-        Balancea contratos nuevos con porcentaje configurable y equidad por rango DPD.
-
-        Reglas clave:
-        - Solo asigna contratos no asignados previamente.
-        - Reparte cada rango DPD en proporcion configurable (81/45).
-        - Evita sesgo de "viejos" vs "nuevos" dentro de cada rango.
+        Balancea contratos nuevos por menor atraso, alternando por pares
+        y respetando cuota final configurable 60/40.
         """
         serlefin_ratio = max(0.0, min(1.0, float(serlefin_ratio)))
         cobyser_ratio = 1.0 - serlefin_ratio
@@ -475,163 +624,110 @@ class AssignmentService:
         )
 
         new_assignments: Dict[int, List[int]] = {45: [], 81: []}
+        blocked_ids = blocked_contract_ids or set()
         contracts_days_map: Dict[int, int] = {
             int(contract["contract_id"]): int(contract["days_overdue"])
             for contract in contracts_with_days
+            if int(contract["contract_id"]) not in blocked_ids
         }
 
         valid_contract_ids = set(contracts_days_map.keys())
 
-        current_assignments_in_range = {
-            user_id: current_assignments.get(user_id, set()) & valid_contract_ids
-            for user_id in settings.USER_IDS
-        }
-
-        all_currently_assigned_in_range: Set[int] = set()
         all_currently_assigned_any: Set[int] = set()
         for user_id in settings.USER_IDS:
-            all_currently_assigned_in_range.update(current_assignments_in_range[user_id])
             all_currently_assigned_any.update(current_assignments.get(user_id, set()))
 
-        all_fixed_contracts: Set[int] = set()
-        for user_id in settings.USER_IDS:
-            all_fixed_contracts.update(fixed_contracts.get(user_id, set()))
-
-        # Contratos nuevos = en rango de consulta, no asignados y no fijos existentes.
-        contracts_new = [
-            contract
-            for contract in contracts_with_days
-            if contract["contract_id"] not in all_currently_assigned_in_range
-            and contract["contract_id"] not in all_fixed_contracts
-        ]
-
-        logger.info(
-            f"Contratos en rango {min_days}-{max_days}: {len(contracts_with_days)} | "
-            f"ya asignados en rango: {len(all_currently_assigned_in_range)} | "
-            f"nuevos a balancear: {len(contracts_new)}"
-        )
-
-        # Paso 1: insertar fijos faltantes (si no estan asignados en ninguna parte).
-        logger.info("Paso 1: incorporando contratos fijos faltantes...")
-        for user_id in settings.USER_IDS:
-            fixed_not_assigned = fixed_contracts.get(user_id, set()) - all_currently_assigned_any
-            if not fixed_not_assigned:
-                continue
-
-            fixed_days_map = self.contract_service.get_days_overdue_for_contracts(
-                list(fixed_not_assigned)
-            )
-            eligible_fixed = [
-                contract_id
-                for contract_id in fixed_not_assigned
-                if int(fixed_days_map.get(contract_id, 0)) <= max_days
-            ]
-            ordered_fixed = sorted(eligible_fixed)
-            if not ordered_fixed:
-                continue
-
-            new_assignments[user_id].extend(ordered_fixed)
-            all_currently_assigned_any.update(ordered_fixed)
-
-            logger.info(
-                f"  Usuario {user_id}: {len(ordered_fixed)} contratos fijos agregados"
-            )
-
-        # Paso 2: balanceo por rango DPD.
-        range_order = list(ASSIGNMENT_DPD_ORDER)
-
-        contracts_by_range: Dict[str, List[Dict[str, Any]]] = {
-            dpd_range: [] for dpd_range in range_order
-        }
-
-        for contract in contracts_new:
+        contracts_new: List[Dict[str, int]] = []
+        for contract in contracts_with_days:
             contract_id = int(contract["contract_id"])
-            days = int(contract["days_overdue"])
-            dpd_range = get_assignment_dpd_range(days)
-
-            if not dpd_range:
+            if contract_id in blocked_ids:
                 continue
-
-            contracts_by_range.setdefault(dpd_range, []).append(
+            if contract_id in all_currently_assigned_any:
+                continue
+            contracts_new.append(
                 {
                     "contract_id": contract_id,
-                    "days_overdue": days,
+                    "days_overdue": int(contract["days_overdue"]),
                 }
             )
 
+        logger.info(
+            "Contratos candidatos: total=%s, ya_asignados=%s, bloqueados=%s, nuevos=%s",
+            len(contracts_with_days),
+            len(all_currently_assigned_any & valid_contract_ids),
+            len(blocked_ids & set(int(c["contract_id"]) for c in contracts_with_days)),
+            len(contracts_new),
+        )
+
+        if not contracts_new:
+            logger.info("No hay contratos nuevos para balancear")
+            return new_assignments, contracts_days_map
+
+        contracts_new.sort(key=lambda item: (int(item["days_overdue"]), int(item["contract_id"])))
+        quotas = self._compute_house_quotas(len(contracts_new), serlefin_ratio)
+        user_sequence = self._build_alternating_user_sequence(
+            total=len(contracts_new),
+            quotas=quotas,
+            first_user=81,
+        )
+
         range_stats: Dict[str, Dict[int, int]] = {
             dpd_range: {45: 0, 81: 0}
-            for dpd_range in range_order
+            for dpd_range in ASSIGNMENT_DPD_ORDER
         }
 
-        if contracts_new:
-            logger.info("Paso 2: distribuyendo nuevos por rango DPD...")
-
-            for dpd_range in range_order:
-                bucket = contracts_by_range.get(dpd_range, [])
-                if not bucket:
-                    continue
-
-                contracts_by_exact_day: Dict[int, List[int]] = {}
-                for contract in bucket:
-                    contracts_by_exact_day.setdefault(
-                        int(contract["days_overdue"]),
-                        [],
-                    ).append(int(contract["contract_id"]))
-
-                count_81 = 0
-                count_45 = 0
-                for days_overdue in sorted(contracts_by_exact_day.keys(), reverse=True):
-                    contract_ids = sorted(contracts_by_exact_day[days_overdue])
-                    user_sequence = self._build_weighted_sequence(
-                        total=len(contract_ids),
-                        serlefin_ratio=serlefin_ratio,
-                        initial_count_81=count_81,
-                        initial_count_45=count_45,
-                    )
-
-                    for contract_id, user_id in zip(contract_ids, user_sequence):
-                        new_assignments[user_id].append(contract_id)
-                        range_stats[dpd_range][user_id] += 1
-                        if user_id == 81:
-                            count_81 += 1
-                        else:
-                            count_45 += 1
-
-                logger.info(
-                    f"  Rango {dpd_range}: total={len(bucket)}, "
-                    f"SERLEFIN={range_stats[dpd_range][81]}, "
-                    f"COBYSER={range_stats[dpd_range][45]}"
-                )
-        else:
-            logger.info("Paso 2: no hay contratos nuevos para balancear")
+        for contract, user_id in zip(contracts_new, user_sequence):
+            contract_id = int(contract["contract_id"])
+            days_overdue = int(contract["days_overdue"])
+            new_assignments[user_id].append(contract_id)
+            dpd_range = get_assignment_dpd_range(days_overdue)
+            if dpd_range:
+                range_stats.setdefault(dpd_range, {45: 0, 81: 0})
+                range_stats[dpd_range][user_id] += 1
 
         total_45 = len(new_assignments[45])
         total_81 = len(new_assignments[81])
         total_assigned_now = total_45 + total_81
-
-        new_45 = sum(range_stats[dpd_range][45] for dpd_range in range_order)
-        new_81 = sum(range_stats[dpd_range][81] for dpd_range in range_order)
-        total_new = new_45 + new_81
-
-        pct_45 = (new_45 / total_new * 100) if total_new > 0 else 0.0
-        pct_81 = (new_81 / total_new * 100) if total_new > 0 else 0.0
+        pct_45 = (total_45 / total_assigned_now * 100) if total_assigned_now > 0 else 0.0
+        pct_81 = (total_81 / total_assigned_now * 100) if total_assigned_now > 0 else 0.0
 
         logger.info("Balanceo completado:")
         logger.info(
-            f"  Nuevos por regla configurable -> SERLEFIN: {new_81} ({pct_81:.1f}%), "
-            f"COBYSER: {new_45} ({pct_45:.1f}%)"
+            "  Nuevos -> SERLEFIN: %s (%.1f%%), COBYSER: %s (%.1f%%)",
+            total_81,
+            pct_81,
+            total_45,
+            pct_45,
         )
         logger.info(
-            f"  Total insertables en esta corrida (incluye fijos faltantes): {total_assigned_now}"
+            "  Cuotas aplicadas -> SERLEFIN: %s, COBYSER: %s",
+            quotas.get(81, 0),
+            quotas.get(45, 0),
         )
+        logger.info(
+            "  Total insertables en esta corrida: %s",
+            total_assigned_now,
+        )
+
+        for dpd_range in ASSIGNMENT_DPD_ORDER:
+            stats = range_stats.get(dpd_range, {45: 0, 81: 0})
+            total_bucket = int(stats[45]) + int(stats[81])
+            if total_bucket <= 0:
+                continue
+            logger.info(
+                "  Rango %s -> SERLEFIN:%s COBYSER:%s",
+                dpd_range,
+                int(stats[81]),
+                int(stats[45]),
+            )
 
         return new_assignments, contracts_days_map
 
     def save_assignments(
         self,
         assignments: Dict[int, List[int]],
-        max_days_threshold: int | None = None,
+        contracts_days_map: Optional[Dict[int, int]] = None,
+        excluded_contract_ids: Optional[Set[int]] = None,
     ) -> Dict[str, int]:
         """
         Guarda nuevas asignaciones en contract_advisors y las registra en historial.
@@ -642,9 +738,11 @@ class AssignmentService:
             "inserted_total": 0,
             "inserted_cobyser": 0,
             "inserted_serlefin": 0,
-            "skipped_gt_threshold": 0,
+            "skipped_blacklist": 0,
         }
         new_assignments: Dict[int, List[int]] = {}
+        blocked_ids = excluded_contract_ids or set()
+        days_cache = contracts_days_map or {}
 
         try:
             all_contract_ids: Set[int] = set()
@@ -655,31 +753,20 @@ class AssignmentService:
                 logger.info("No hay contratos para insertar")
                 return stats
 
-            eligible_contract_ids: Set[int] = set(all_contract_ids)
-            if max_days_threshold is not None:
-                days_map = self.contract_service.get_days_overdue_for_contracts(
-                    list(all_contract_ids)
+            eligible_contract_ids: Set[int] = {
+                int(contract_id)
+                for contract_id in all_contract_ids
+                if int(contract_id) not in blocked_ids
+            }
+            stats["skipped_blacklist"] = len(all_contract_ids) - len(eligible_contract_ids)
+            if stats["skipped_blacklist"] > 0:
+                logger.warning(
+                    "Se omitieron %s contratos por lista negra",
+                    stats["skipped_blacklist"],
                 )
-                eligible_contract_ids = {
-                    contract_id
-                    for contract_id in all_contract_ids
-                    if int(days_map.get(contract_id, 0)) <= int(max_days_threshold)
-                }
-                stats["skipped_gt_threshold"] = (
-                    len(all_contract_ids) - len(eligible_contract_ids)
-                )
-                if stats["skipped_gt_threshold"] > 0:
-                    logger.warning(
-                        "Se omitieron %s contratos por superar tope de %s dias",
-                        stats["skipped_gt_threshold"],
-                        max_days_threshold,
-                    )
-                if not eligible_contract_ids:
-                    logger.info(
-                        "No hay contratos elegibles para insertar tras filtro de tope (%s dias)",
-                        max_days_threshold,
-                    )
-                    return stats
+            if not eligible_contract_ids:
+                logger.info("No hay contratos elegibles para insertar")
+                return stats
 
             logger.info(
                 f"Verificando duplicados para {len(eligible_contract_ids)} contratos unicos..."
@@ -722,9 +809,21 @@ class AssignmentService:
 
             history_stats = {"total_registered": 0}
             if inserted_contract_ids:
-                days_map = self.contract_service.get_days_overdue_for_contracts(
-                    inserted_contract_ids
-                )
+                missing_days = [
+                    contract_id
+                    for contract_id in inserted_contract_ids
+                    if int(contract_id) not in days_cache
+                ]
+                if missing_days:
+                    fetched_days = self._require_contract_service().get_days_overdue_for_contracts(
+                        missing_days
+                    )
+                    days_cache.update(fetched_days)
+
+                days_map = {
+                    int(contract_id): int(days_cache.get(contract_id, 0))
+                    for contract_id in inserted_contract_ids
+                }
                 assignment_metadata = self._build_history_metadata_from_days(
                     days_map,
                     tipo="ASIGNACION",
@@ -789,7 +888,7 @@ class AssignmentService:
                     )
                     continue
 
-                missing_days_map = self.contract_service.get_days_overdue_for_contracts(
+                missing_days_map = self._require_contract_service().get_days_overdue_for_contracts(
                     list(missing_fixed)
                 )
                 eligible_missing = {
@@ -827,7 +926,7 @@ class AssignmentService:
                 for contract_ids in new_fixed_assignments.values():
                     inserted_contract_ids.extend(contract_ids)
 
-                days_map = self.contract_service.get_days_overdue_for_contracts(
+                days_map = self._require_contract_service().get_days_overdue_for_contracts(
                     inserted_contract_ids
                 )
                 assignment_metadata = self._build_history_metadata_from_days(
@@ -872,81 +971,96 @@ class AssignmentService:
         """
         Ejecuta el proceso completo de asignacion:
         0. Carga configuracion dinamica (porcentaje y rango).
-        1. Obtiene contratos fijos.
-        2. Inserta fijos faltantes.
-        3. Limpia asignaciones (>tope y 0 sin gestion).
-        4. Consulta contratos en rango configurado.
-        5. Balancea nuevos con porcentaje configurable por rango DPD.
-        6. Guarda asignaciones e historial.
+        1. Carga lista negra (contratos nunca asignables).
+        2. Garantiza que lista negra no quede asignada.
+        3. Consulta contratos en rango configurado (MySQL).
+        4. Balancea nuevos por menor atraso, alternancia y cuota 60/40.
+        5. Guarda asignaciones e historial.
         """
         logger.info("=" * 80)
         logger.info("INICIANDO PROCESO DE ASIGNACION DE CONTRATOS")
-        logger.info("MODO: limpieza + asignacion configurable por rango DPD")
+        logger.info("MODO: asignacion sin limpieza diaria, sin fijos")
         logger.info("=" * 80)
 
+        process_start = datetime.now()
         results = {
             "success": False,
-            "fixed_contracts": {},
-            "fixed_inserted_stats": {},
+            "blacklist_contracts_count": 0,
+            "blacklist_enforcement_stats": {},
             "contracts_to_assign": [],
-            "clean_stats": {},
             "balance_stats": {},
             "insert_stats": {},
             "final_assignments": {},
             "runtime_config": {},
             "error": None,
+            "started_at": process_start.isoformat(),
         }
 
         try:
             runtime_config = self._load_runtime_assignment_config()
+            effective_min_days = max(
+                int(runtime_config.min_days),
+                int(settings.DAYS_THRESHOLD),
+            )
+            effective_max_days = max(
+                int(runtime_config.max_days),
+                effective_min_days,
+            )
+
+            if effective_min_days != int(runtime_config.min_days):
+                logger.warning(
+                    "Rango minimo configurado (%s) ajustado a minimo operativo (%s)",
+                    runtime_config.min_days,
+                    effective_min_days,
+                )
+            if effective_max_days != int(runtime_config.max_days):
+                logger.warning(
+                    "Rango maximo configurado (%s) ajustado a %s",
+                    runtime_config.max_days,
+                    effective_max_days,
+                )
+
             results["runtime_config"] = {
                 "serlefin_percent": runtime_config.serlefin_percent,
                 "cobyser_percent": runtime_config.cobyser_percent,
-                "min_days": runtime_config.min_days,
-                "max_days": runtime_config.max_days,
+                "min_days": effective_min_days,
+                "max_days": effective_max_days,
                 "updated_by": runtime_config.updated_by,
                 "updated_at": runtime_config.updated_at.isoformat(),
             }
 
-            fixed_contracts = self.get_fixed_contracts()
-            results["fixed_contracts"] = {
-                user_id: list(contract_ids)
-                for user_id, contract_ids in fixed_contracts.items()
-            }
+            blocked_contract_ids = self._load_contract_blacklist()
+            results["blacklist_contracts_count"] = len(blocked_contract_ids)
 
-            fixed_insert_stats = self.ensure_fixed_contracts_assigned(
-                fixed_contracts=fixed_contracts,
-                max_days_threshold=runtime_config.max_days,
+            blacklist_enforcement_stats = self.enforce_blacklist_on_active_assignments(
+                blocked_contract_ids=blocked_contract_ids,
             )
-            results["fixed_inserted_stats"] = fixed_insert_stats
+            results["blacklist_enforcement_stats"] = blacklist_enforcement_stats
 
             current_assignments = self.get_current_assignments()
 
-            clean_stats = self.clean_assignments(
-                fixed_contracts=fixed_contracts,
-                current_assignments=current_assignments,
-                max_days_threshold=runtime_config.max_days,
-            )
-            results["clean_stats"] = clean_stats
-
-            if clean_stats.get("deleted_total", 0) > 0:
+            if blacklist_enforcement_stats.get("removed_from_contract_advisors", 0) > 0:
                 current_assignments = self.get_current_assignments()
 
-            contracts_with_arrears = self.contract_service.get_contracts_with_arrears(
-                min_days=runtime_config.min_days,
-                max_days=runtime_config.max_days,
+            # Consulta principal a MySQL en una sola llamada simple.
+            # El filtrado de lista negra se aplica en memoria para evitar queries
+            # enormes cuando el TXT tenga miles de contratos bloqueados.
+            contracts_with_arrears = self._require_contract_service().get_contracts_with_arrears(
+                min_days=effective_min_days,
+                max_days=effective_max_days,
+                excluded_contract_ids=None,
             )
             results["contracts_to_assign"] = [
-                contract["contract_id"] for contract in contracts_with_arrears
+                contract["contract_id"]
+                for contract in contracts_with_arrears
+                if int(contract["contract_id"]) not in blocked_contract_ids
             ]
 
             new_assignments, contracts_days_map = self.balance_assignments(
                 contracts_with_days=contracts_with_arrears,
-                fixed_contracts=fixed_contracts,
                 current_assignments=current_assignments,
                 serlefin_ratio=runtime_config.serlefin_ratio,
-                min_days=runtime_config.min_days,
-                max_days=runtime_config.max_days,
+                blocked_contract_ids=blocked_contract_ids,
             )
             results["balance_stats"] = {
                 user_id: len(contract_ids)
@@ -956,7 +1070,8 @@ class AssignmentService:
 
             insert_stats = self.save_assignments(
                 new_assignments,
-                max_days_threshold=runtime_config.max_days,
+                contracts_days_map=contracts_days_map,
+                excluded_contract_ids=blocked_contract_ids,
             )
             results["insert_stats"] = insert_stats
 
@@ -983,8 +1098,108 @@ class AssignmentService:
             logger.error(f"Error en el proceso de asignacion: {e}")
             results["error"] = str(e)
             raise
+        finally:
+            process_end = datetime.now()
+            results["finished_at"] = process_end.isoformat()
+            results["duration_seconds"] = round(
+                (process_end - process_start).total_seconds(),
+                3,
+            )
+
+            try:
+                completion_sent = self.send_completion_notification(results)
+                results["completion_notification_sent"] = completion_sent
+            except Exception as notify_error:
+                logger.error(
+                    "Error enviando notificacion de finalizacion: %s",
+                    notify_error,
+                )
+                results["completion_notification_sent"] = False
+                results["completion_notification_error"] = str(notify_error)
 
         return results
+
+    def send_completion_notification(self, results: Dict[str, Any]) -> bool:
+        """
+        Notifica siempre por correo el resultado final del proceso de asignacion.
+        """
+        from app.services.email_service import email_service
+
+        recipients = settings.notification_recipients
+        if not recipients:
+            logger.warning(
+                "No hay destinatarios configurados para notificacion de finalizacion"
+            )
+            return False
+
+        success = bool(results.get("success"))
+        status_label = "EXITOSO" if success else "CON ERROR"
+        insert_stats = results.get("insert_stats", {}) or {}
+        balance_stats = results.get("balance_stats", {}) or {}
+        runtime_cfg = results.get("runtime_config", {}) or {}
+        blacklist_stats = results.get("blacklist_enforcement_stats", {}) or {}
+        contracts_to_assign_count = len(results.get("contracts_to_assign", []) or [])
+        report_sent = bool(results.get("report_sent", False))
+        error_message = str(results.get("error") or "").strip()
+        report_error = str(results.get("report_error") or "").strip()
+
+        subject = f"[ALOCREDIT] Proceso de asignacion finalizado - {status_label}"
+
+        error_block = ""
+        if error_message:
+            error_block += f"<p><strong>Error:</strong> {error_message}</p>"
+        if report_error:
+            error_block += f"<p><strong>Error reportes:</strong> {report_error}</p>"
+        if not error_block:
+            error_block = "<p><strong>Error:</strong> Sin errores reportados.</p>"
+
+        body = f"""
+        <html>
+        <body style="font-family:Arial,sans-serif">
+          <h2>Proceso de Asignacion Finalizado ({status_label})</h2>
+          <p><strong>Inicio:</strong> {results.get("started_at", "-")}</p>
+          <p><strong>Fin:</strong> {results.get("finished_at", "-")}</p>
+          <p><strong>Duracion (s):</strong> {results.get("duration_seconds", "-")}</p>
+          <hr />
+          <p><strong>Rango operativo:</strong> {runtime_cfg.get("min_days", "-")} a {runtime_cfg.get("max_days", "-")} dias</p>
+          <p><strong>Porcentaje:</strong> Serlefin {runtime_cfg.get("serlefin_percent", "-")}% / Cobyser {runtime_cfg.get("cobyser_percent", "-")}%</p>
+          <p><strong>Contratos evaluados para asignar:</strong> {contracts_to_assign_count}</p>
+          <p><strong>Insertados:</strong> {insert_stats.get("inserted_total", 0)} (Serlefin {insert_stats.get("inserted_serlefin", 0)} / Cobyser {insert_stats.get("inserted_cobyser", 0)})</p>
+          <p><strong>Balance calculado:</strong> Serlefin {balance_stats.get(81, 0)} / Cobyser {balance_stats.get(45, 0)}</p>
+          <p><strong>Lista negra cargada:</strong> {results.get("blacklist_contracts_count", 0)}</p>
+          <p><strong>Removidos por lista negra (activos):</strong> {blacklist_stats.get("removed_from_contract_advisors", 0)}</p>
+          <p><strong>Reporte adjunto enviado:</strong> {"SI" if report_sent else "NO"}</p>
+          <hr />
+          {error_block}
+          <p>Correo automatico de cierre de ejecucion.</p>
+        </body>
+        </html>
+        """
+
+        sent_ok = 0
+        for recipient in recipients:
+            if email_service.send_assignment_report(
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                attachments=None,
+            ):
+                sent_ok += 1
+
+        if sent_ok == len(recipients):
+            logger.info(
+                "Notificacion de finalizacion enviada a %s/%s destinatarios",
+                sent_ok,
+                len(recipients),
+            )
+            return True
+
+        logger.warning(
+            "Notificacion de finalizacion parcial: %s/%s destinatarios",
+            sent_ok,
+            len(recipients),
+        )
+        return False
 
     def generate_and_send_reports(self) -> bool:
         """
@@ -1026,43 +1241,313 @@ class AssignmentService:
                 logger.error("No se pudieron generar los archivos de informe")
                 return False
 
-            metrics_html = report_service_extended.generate_metrics_html(metrics)
+            metrics_html_general = report_service_extended.generate_metrics_html(
+                metrics,
+                audience="general",
+            )
+            metrics_html_cobyser = report_service_extended.generate_metrics_html(
+                metrics,
+                audience="cobyser",
+            )
+            metrics_html_serlefin = report_service_extended.generate_metrics_html(
+                metrics,
+                audience="serlefin",
+            )
+            serlefin_total_contracts = len(contracts_81)
+            cobyser_total_contracts = len(contracts_45)
+            total_contracts = serlefin_total_contracts + cobyser_total_contracts
+            serlefin_percent = (
+                round((serlefin_total_contracts / total_contracts) * 100, 2)
+                if total_contracts > 0
+                else 0.0
+            )
+            cobyser_percent = (
+                round((cobyser_total_contracts / total_contracts) * 100, 2)
+                if total_contracts > 0
+                else 0.0
+            )
+            cobyser_recipients = settings.cobyser_notification_recipients
+            serlefin_recipients = settings.serlefin_notification_recipients
+            both_reports_recipients = settings.notification_recipients
 
-            recipients = settings.notification_recipients
-            if not recipients:
-                logger.error("No hay destinatarios configurados en NOTIFICATION_RECIPIENTS")
+            if not any([cobyser_recipients, serlefin_recipients, both_reports_recipients]):
+                logger.error(
+                    "No hay destinatarios configurados. "
+                    "Define COBYSER_NOTIFICATION_RECIPIENTS, "
+                    "SERLEFIN_NOTIFICATION_RECIPIENTS o NOTIFICATION_RECIPIENTS."
+                )
                 return False
 
             sent_ok = 0
-            for recipient in recipients:
-                success = email_service.send_multiple_reports(
-                    recipient=recipient,
-                    serlefin_file=file_81 if file_81 else "",
-                    cobyser_file=file_45 if file_45 else "",
-                    metrics_html=metrics_html,
-                    attach_serlefin_file=False,
-                    attach_cobyser_file=True,
+            expected_total = 0
+            generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            cobyser_attachment_text = (
+                "Se adjunta base de Cobyser."
+                if file_45
+                else "No se pudo adjuntar base de Cobyser en esta corrida."
+            )
+            both_attachments_text = (
+                "Se adjuntan base de Cobyser y base de Serlefin."
+                if file_45 and file_81
+                else "Se adjuntan las bases disponibles en esta corrida."
+            )
+
+            def _send_group(
+                recipients: List[str],
+                subject: str,
+                body: str,
+                attachments: List[str],
+                label: str,
+            ) -> None:
+                nonlocal sent_ok, expected_total
+                if not recipients:
+                    return
+
+                expected_total += len(recipients)
+                for recipient in recipients:
+                    ok = email_service.send_assignment_report(
+                        recipient=recipient,
+                        subject=subject,
+                        body=body,
+                        attachments=attachments or None,
+                    )
+                    if ok:
+                        sent_ok += 1
+                        logger.info("Correo %s enviado a %s", label, recipient)
+                    else:
+                        logger.warning("No se pudo enviar correo %s a %s", label, recipient)
+
+            if cobyser_recipients:
+                cobyser_subject = "Asignacion de cartera - Cobyser (notificacion + base)"
+                cobyser_body = f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Cobyser</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente para Cobyser.</p>
+                  <p><strong>Contratos asignados a Cobyser:</strong> {cobyser_total_contracts}</p>
+                  <p><strong>Participacion Cobyser:</strong> {cobyser_percent}%</p>
+                  <p>{cobyser_attachment_text}</p>
+                  <p>Este correo muestra solo la informacion de Cobyser.</p>
+                  <hr />
+                  {metrics_html_cobyser}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
+                _send_group(
+                    recipients=cobyser_recipients,
+                    subject=cobyser_subject,
+                    body=cobyser_body,
+                    attachments=[file_45] if file_45 else [],
+                    label="COBYSER",
                 )
 
-                if success:
-                    sent_ok += 1
-                    logger.info("Informes enviados exitosamente a %s", recipient)
-                else:
-                    logger.warning("No se pudo enviar el correo a %s", recipient)
+            if serlefin_recipients:
+                serlefin_subject = "Asignacion de cartera - Serlefin (solo notificacion)"
+                serlefin_body = f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Serlefin</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente para Serlefin.</p>
+                  <p><strong>Contratos asignados a Serlefin:</strong> {serlefin_total_contracts}</p>
+                  <p><strong>Participacion Serlefin:</strong> {serlefin_percent}%</p>
+                  <p>Este correo se envia sin archivo adjunto, segun la regla operativa.</p>
+                  <p>Este correo muestra solo la informacion de Serlefin.</p>
+                  <hr />
+                  {metrics_html_serlefin}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
+                _send_group(
+                    recipients=serlefin_recipients,
+                    subject=serlefin_subject,
+                    body=serlefin_body,
+                    attachments=[],
+                    label="SERLEFIN",
+                )
 
-            if sent_ok == len(recipients):
+            if both_reports_recipients:
+                both_subject = "Asignacion de cartera - Notificacion con ambas bases"
+                both_body = f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Notificacion general</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente.</p>
+                  <p>{both_attachments_text}</p>
+                  <hr />
+                  {metrics_html_general}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
+                both_attachments: List[str] = []
+                if file_45:
+                    both_attachments.append(file_45)
+                if file_81:
+                    both_attachments.append(file_81)
+
+                _send_group(
+                    recipients=both_reports_recipients,
+                    subject=both_subject,
+                    body=both_body,
+                    attachments=both_attachments,
+                    label="GENERAL_AMBAS_BASES",
+                )
+
+            if expected_total == 0:
+                logger.warning("No se ejecutaron envios: no hay destinatarios activos")
+                return False
+
+            if sent_ok == expected_total:
+                logger.info("Envio de informes completado: %s/%s", sent_ok, expected_total)
                 return True
 
             logger.warning(
-                "Envio parcial de notificaciones: %s/%s correos enviados",
+                "Envio parcial de informes: %s/%s correos enviados",
                 sent_ok,
-                len(recipients),
+                expected_total,
             )
             return False
 
         except Exception as e:
             logger.error(f"Error en generate_and_send_reports: {e}")
             return False
+
+    def finalize_all_active_assignments(self) -> Dict[str, int]:
+        """
+        Finaliza todas las asignaciones activas:
+        1) Cierra historial activo en contract_advisors_history (fecha terminal).
+        2) Elimina todos los registros de contract_advisors.
+
+        Returns:
+            Estadisticas del cierre y limpieza.
+        """
+        logger.info("Finalizando todas las asignaciones activas tras generar reporte...")
+
+        stats = {
+            "active_assignments_found": 0,
+            "history_closed": 0,
+            "history_updated": 0,
+            "history_inserted": 0,
+            "deleted_from_contract_advisors": 0,
+        }
+
+        try:
+            result = self.postgres_session.execute(
+                text(
+                    """
+                    WITH clock AS (
+                        SELECT NOW() AS ts
+                    ),
+                    active_rows AS (
+                        SELECT
+                            ca.id,
+                            ca.user_id,
+                            ca.contract_id
+                        FROM alocreditindicators.contract_advisors ca
+                    ),
+                    active_pairs AS (
+                        SELECT DISTINCT
+                            ar.user_id,
+                            ar.contract_id
+                        FROM active_rows ar
+                    ),
+                    open_history AS (
+                        SELECT
+                            h.id,
+                            h.user_id,
+                            h.contract_id
+                        FROM alocreditindicators.contract_advisors_history h
+                        INNER JOIN active_pairs ap
+                            ON ap.user_id = h.user_id
+                           AND ap.contract_id = h.contract_id
+                        WHERE h."Fecha Terminal" IS NULL
+                    ),
+                    updated AS (
+                        UPDATE alocreditindicators.contract_advisors_history h
+                        SET
+                            "Fecha Terminal" = (SELECT ts FROM clock),
+                            tipo = :tipo_finalizacion
+                        FROM open_history oh
+                        WHERE h.id = oh.id
+                        RETURNING h.id
+                    ),
+                    inserted AS (
+                        INSERT INTO alocreditindicators.contract_advisors_history (
+                            user_id,
+                            contract_id,
+                            "Fecha Inicial",
+                            "Fecha Terminal",
+                            tipo,
+                            dpd_inicial,
+                            dpd_final,
+                            dias_atraso_incial,
+                            dias_atraso_terminal
+                        )
+                        SELECT
+                            ap.user_id,
+                            ap.contract_id,
+                            (SELECT ts FROM clock),
+                            (SELECT ts FROM clock),
+                            :tipo_finalizacion,
+                            NULL,
+                            NULL,
+                            NULL,
+                            NULL
+                        FROM active_pairs ap
+                        LEFT JOIN open_history oh
+                            ON oh.user_id = ap.user_id
+                           AND oh.contract_id = ap.contract_id
+                        WHERE oh.id IS NULL
+                        RETURNING id
+                    ),
+                    deleted AS (
+                        DELETE FROM alocreditindicators.contract_advisors ca
+                        USING active_rows ar
+                        WHERE ca.id = ar.id
+                        RETURNING ca.id
+                    )
+                    SELECT
+                        (SELECT COUNT(*) FROM active_rows) AS active_assignments_found,
+                        (SELECT COUNT(*) FROM updated) AS history_updated,
+                        (SELECT COUNT(*) FROM inserted) AS history_inserted,
+                        (SELECT COUNT(*) FROM deleted) AS deleted_from_contract_advisors
+                    """
+                ),
+                {"tipo_finalizacion": "FINALIZADO_REPORTE_CARTERA"},
+            )
+
+            payload = result.mappings().one()
+            stats["active_assignments_found"] = int(payload["active_assignments_found"] or 0)
+            stats["history_updated"] = int(payload["history_updated"] or 0)
+            stats["history_inserted"] = int(payload["history_inserted"] or 0)
+            stats["deleted_from_contract_advisors"] = int(payload["deleted_from_contract_advisors"] or 0)
+            stats["history_closed"] = stats["history_updated"] + stats["history_inserted"]
+
+            self.postgres_session.commit()
+
+            if stats["active_assignments_found"] == 0:
+                logger.info("No hay asignaciones activas para finalizar")
+                return stats
+
+            logger.info(
+                "Finalizacion completada: activos=%s, historial_cerrado=%s, eliminados=%s",
+                stats["active_assignments_found"],
+                stats["history_closed"],
+                stats["deleted_from_contract_advisors"],
+            )
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error finalizando asignaciones activas: {e}")
+            self.postgres_session.rollback()
+            raise
 
 
 

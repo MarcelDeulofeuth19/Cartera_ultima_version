@@ -290,15 +290,17 @@ class ReportService:
             )
             all_files.update(txt_files)
             
-            # 2. Excel de contratos fijos
-            fixed_contracts_dict = {
-                int(k): v for k, v in assignment_results['fixed_contracts'].items()
-            }
-            excel_file = self.generate_fixed_contracts_excel(
-                fixed_contracts_dict,
-                postgres_session
-            )
-            all_files['excel_fixed'] = excel_file
+            # 2. Excel de contratos fijos (opcional en logica nueva)
+            fixed_contracts_raw = assignment_results.get('fixed_contracts')
+            if isinstance(fixed_contracts_raw, dict):
+                fixed_contracts_dict = {
+                    int(k): v for k, v in fixed_contracts_raw.items()
+                }
+                excel_file = self.generate_fixed_contracts_excel(
+                    fixed_contracts_dict,
+                    postgres_session
+                )
+                all_files['excel_fixed'] = excel_file
             
             logger.info("=" * 80)
             logger.info("✓ TODOS LOS REPORTES GENERADOS EXITOSAMENTE")

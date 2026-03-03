@@ -1,31 +1,31 @@
-# 🐳 Docker - Sistema de Asignación de Contratos
+﻿# ðŸ³ Docker - Sistema de AsignaciÃ³n de Contratos
 
-## 📦 Contenido Docker
+## ðŸ“¦ Contenido Docker
 
 Este proyecto incluye:
-- **Dockerfile**: Imagen multi-stage optimizada para producción
-- **docker-compose.yml**: Orquestación con puerto único (8000)
+- **Dockerfile**: Imagen multi-stage optimizada para producciÃ³n
+- **docker-compose.yml**: OrquestaciÃ³n con puerto Ãºnico (8000)
 - **test_api.py**: Suite completa de tests
 - **docker-test.bat**: Script automatizado de build + test
 
 ---
 
-## 🚀 Inicio Rápido
+## ðŸš€ Inicio RÃ¡pido
 
-### Opción 1: Script Automatizado (Recomendado)
+### OpciÃ³n 1: Script Automatizado (Recomendado)
 
 ```bash
 docker-test.bat
 ```
 
-Este script hace TODO automáticamente:
-1. ✅ Limpia contenedores previos
-2. ✅ Build de la imagen Docker
-3. ✅ Inicia el contenedor
-4. ✅ Ejecuta todos los tests
-5. ✅ Muestra resultados
+Este script hace TODO automÃ¡ticamente:
+1. âœ… Limpia contenedores previos
+2. âœ… Build de la imagen Docker
+3. âœ… Inicia el contenedor
+4. âœ… Ejecuta todos los tests
+5. âœ… Muestra resultados
 
-### Opción 2: Comandos Manuales
+### OpciÃ³n 2: Comandos Manuales
 
 ```bash
 # Build
@@ -46,7 +46,7 @@ docker-compose down
 
 ---
 
-## 🌐 Accesos
+## ðŸŒ Accesos
 
 Una vez iniciado el contenedor:
 
@@ -57,20 +57,20 @@ Una vez iniciado el contenedor:
 
 ---
 
-## 🧪 Tests Incluidos
+## ðŸ§ª Tests Incluidos
 
 El archivo `test_api.py` ejecuta 6 tests:
 
-1. ✅ **API Root**: Verifica endpoint principal
-2. ✅ **Health Check**: Valida conexiones a MySQL y PostgreSQL
-3. ✅ **Lock Status**: Verifica sistema singleton
-4. ✅ **Swagger Docs**: Comprueba documentación
-5. ✅ **Assignment Process**: Ejecuta proceso REAL completo
-6. ✅ **Singleton Protection**: Valida no concurrencia
+1. âœ… **API Root**: Verifica endpoint principal
+2. âœ… **Health Check**: Valida conexiones a MySQL y PostgreSQL
+3. âœ… **Lock Status**: Verifica sistema singleton
+4. âœ… **Swagger Docs**: Comprueba documentaciÃ³n
+5. âœ… **Assignment Process**: Ejecuta proceso REAL completo
+6. âœ… **Singleton Protection**: Valida no concurrencia
 
 ---
 
-## 📊 Características Docker
+## ðŸ“Š CaracterÃ­sticas Docker
 
 ### Multi-Stage Build
 
@@ -82,22 +82,34 @@ Resultado: Imagen optimizada y ligera
 
 ### Seguridad
 
-- ✅ Usuario no-root (appuser)
-- ✅ Permisos mínimos necesarios
-- ✅ Variables de entorno externalizadas
-- ✅ Health checks configurados
+- âœ… Usuario no-root (appuser)
+- âœ… Permisos mÃ­nimos necesarios
+- âœ… Variables de entorno externalizadas
+- âœ… Health checks configurados
 
-### Volúmenes Persistentes
+### VolÃºmenes Persistentes
 
 ```yaml
 volumes:
   - ./reports:/app/reports  # Reportes generados
-  - ./logs:/app/logs        # Logs de aplicación
+  - ./logs:/app/logs        # Logs de aplicaciÃ³n
+  - ./docker-data/internal-config-db:/var/lib/postgresql/data  # DB interna persistente
 ```
+
+### Persistencia de Base Interna (IMPORTANTE)
+
+La base interna `internal-config-db` usa bind mount en `./docker-data/internal-config-db`.
+
+Esto permite que los datos de configuraciÃ³n/auditorÃ­a/login del panel sobrevivan:
+- `docker compose down`
+- `docker system prune`
+- rebuild de imÃ¡genes
+
+Solo se pierden si borras manualmente `./docker-data/internal-config-db`.
 
 ---
 
-## 🔧 Comandos Docker Útiles
+## ðŸ”§ Comandos Docker Ãštiles
 
 ```bash
 # Ver estado
@@ -122,9 +134,12 @@ docker-compose exec fastapi-app bash
 docker stats asignacion-contratos-api
 ```
 
+Nota: evita `docker system prune --volumes` si usas volÃºmenes Docker tradicionales.
+En este proyecto la DB interna persiste en carpeta host (`./docker-data/...`) para mitigar ese riesgo.
+
 ---
 
-## 🛠️ Troubleshooting Docker
+## ðŸ› ï¸ Troubleshooting Docker
 
 ### Error: Puerto 8000 en uso
 
@@ -161,7 +176,7 @@ docker-compose build --no-cache
 # Todos los logs
 docker-compose logs
 
-# Últimas 100 líneas
+# Ãšltimas 100 lÃ­neas
 docker-compose logs --tail=100
 
 # Logs en tiempo real
@@ -170,7 +185,7 @@ docker-compose logs -f
 
 ---
 
-## 📋 Variables de Entorno
+## ðŸ“‹ Variables de Entorno
 
 Configuradas en `docker-compose.yml`:
 
@@ -183,7 +198,7 @@ environment:
   # etc...
 ```
 
-Para cambiar en producción, usa archivo `.env`:
+Para cambiar en producciÃ³n, usa archivo `.env`:
 
 ```bash
 # Crear .env
@@ -193,12 +208,12 @@ POSTGRES_HOST=tu-servidor-postgres.com
 
 ---
 
-## 🚀 Deployment Producción
+## ðŸš€ Deployment ProducciÃ³n
 
 ### Con Docker Compose
 
 ```bash
-# Producción con replicas
+# ProducciÃ³n con replicas
 docker-compose up -d --scale fastapi-app=3
 ```
 
@@ -218,9 +233,9 @@ kompose convert -f docker-compose.yml
 
 ---
 
-## 📈 Monitoreo
+## ðŸ“ˆ Monitoreo
 
-### Health Check Automático
+### Health Check AutomÃ¡tico
 
 Docker verifica salud cada 30s:
 
@@ -247,7 +262,7 @@ grafana:
 
 ---
 
-## 🔐 Seguridad en Producción
+## ðŸ” Seguridad en ProducciÃ³n
 
 1. **Usar secrets en lugar de variables**:
    ```yaml
@@ -268,10 +283,10 @@ grafana:
 
 ---
 
-## 📦 Tamaño de Imagen
+## ðŸ“¦ TamaÃ±o de Imagen
 
 ```bash
-# Ver tamaño
+# Ver tamaÃ±o
 docker images | grep asignacion
 
 # Optimizar limpiando layers
@@ -282,20 +297,20 @@ Imagen optimizada: ~300-400 MB
 
 ---
 
-## ✅ Checklist Pre-Producción
+## âœ… Checklist Pre-ProducciÃ³n
 
 - [ ] Tests pasando (ejecutar `docker-test.bat`)
 - [ ] Health checks configurados
 - [ ] Variables de entorno externalizadas
-- [ ] Volúmenes para persistencia
+- [ ] VolÃºmenes para persistencia
 - [ ] Logs configurados
 - [ ] Resources limits definidos
 - [ ] Backup strategy definida
 - [ ] Monitoring configurado
-- [ ] Documentación actualizada
+- [ ] DocumentaciÃ³n actualizada
 
 ---
 
-**Puerto Único**: 8000 (Swagger UI + API)
+**Puerto Ãšnico**: 8000 (Swagger UI + API)
 **Docker Image**: Python 3.11-slim
 **Architecture**: Multi-stage optimized

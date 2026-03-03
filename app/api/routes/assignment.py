@@ -14,7 +14,6 @@ from app.database.connections import db_manager
 from app.services.assignment_service import AssignmentService
 from app.services.division_service import DivisionService
 from app.services.report_service import ReportService
-from app.data.manual_fixed_contracts import MANUAL_FIXED_CONTRACTS
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +49,9 @@ class LockStatusResponse(BaseModel):
     Ejecuta el proceso completo de asignación de contratos:
     1. Adquiere lock para garantizar una única instancia
     2. Consulta contratos en el rango dinámico configurado
-    3. Identifica contratos fijos (effect='pago_total' o 'acuerdo_de_pago')
-    4. Limpia asignaciones con >tope o con 0 dias sin pago_total/acuerdo_de_pago
-    5. Balancea y asigna contratos según porcentaje dinámico (SERLEFIN/COBYSER)
-    6. Genera reportes TXT y Excel
+    3. Excluye contratos de lista negra y limpia cualquier asignación bloqueada activa
+    4. Balancea y asigna contratos (SERLEFIN/COBYSER) con alternancia y cuota dinámica
+    5. Registra historial y genera reportes
     
     Este endpoint garantiza transaccionalidad y manejo de errores robusto.
     """,
@@ -94,7 +92,7 @@ async def run_assignment_process():
                     results,
                     postgres_session
                 )
-                
+
                 # Calcular tiempo de ejecución
                 end_time = datetime.now()
                 execution_time = (end_time - start_time).total_seconds()
@@ -109,14 +107,11 @@ async def run_assignment_process():
                     message="Proceso de asignación completado exitosamente",
                     execution_time=execution_time,
                     results={
-                        'fixed_contracts_count': {
-                            'user_45': len(results['fixed_contracts'].get(45, [])),
-                            'user_81': len(results['fixed_contracts'].get(81, []))
-                        },
+                        'blacklist_contracts_count': results.get('blacklist_contracts_count', 0),
+                        'blacklist_enforcement_stats': results.get('blacklist_enforcement_stats', {}),
                         'contracts_processed': len(results['contracts_to_assign']),
-                        'clean_stats': results['clean_stats'],
                         'balance_stats': results['balance_stats'],
-                        'insert_stats': results['insert_stats']
+                        'insert_stats': results['insert_stats'],
                     },
                     reports=report_files,
                     timestamp=end_time.isoformat()
@@ -342,104 +337,15 @@ async def health_check():
 
 @router.post(
     "/process-manual-fixed",
-    response_model=AssignmentResponse,
-    summary="Procesar e insertar 100% de contratos fijos manuales de Cobyser y Serlefin",
-    description="""
-    Inserta el 100% de los contratos fijos manuales para ambas casas de cobranza:
-    - Cobyser (Usuario 45): 79 contratos fijos manuales
-    - Serlefin (Usuario 81): 415 contratos fijos manuales
-    - Total: 494 contratos fijos
-    
-    ⚠️ IMPORTANTE: Este endpoint inserta TODOS los contratos definidos en el código,
-    sin aplicar filtros de porcentaje. Los contratos fijos son independientes del
-    sistema de balanceo 60/40 de las casas de cobranza.
-    
-    Validaciones automáticas por lotes:
-    1. ✓ Verifica que el contrato exista en MySQL (alocreditprod)
-    2. ✓ Verifica que el contrato no esté ya asignado (evita duplicados)
-    3. ✓ Valida contra contratos fijos de managements
-    4. ✓ Inserta solo contratos nuevos por lotes (1000 contratos por lote)
-    5. ✓ Registra automáticamente en historial con fecha_inicial
-    
-    Este endpoint garantiza integridad de datos y procesamiento eficiente.
-    """,
-    responses={
-        200: {"description": "Contratos procesados exitosamente - Retorna estadísticas detalladas"},
-        409: {"description": "Otra instancia del proceso está en ejecución"},
-        500: {"description": "Error interno durante la ejecución"}
-    }
+    summary="Endpoint deshabilitado",
+    description="Los contratos fijos manuales fueron removidos de la lógica operativa.",
 )
 async def process_manual_fixed_contracts():
-    """
-    Endpoint para procesar contratos fijos manuales de Cobyser y Serlefin con validaciones.
-    
-    Returns:
-        AssignmentResponse con estadísticas del procesamiento
-    """
-    start_time = datetime.now()
-    logger.info("=" * 100)
-    logger.info(f"[{start_time}] PROCESANDO CONTRATOS FIJOS MANUALES (COBYSER Y SERLEFIN)")
-    logger.info("=" * 100)
-    
-    try:
-        # Intentar adquirir el lock
-        with acquire_process_lock():
-            logger.info("✓ Lock adquirido. Iniciando procesamiento de contratos manuales...")
-            
-            # Obtener sesiones de base de datos
-            with db_manager.get_mysql_session() as mysql_session, \
-                 db_manager.get_postgres_session() as postgres_session:
-                
-                # Procesar contratos fijos manuales
-                assignment_service = AssignmentService(mysql_session, postgres_session)
-                stats = assignment_service.process_manual_fixed_contracts(MANUAL_FIXED_CONTRACTS)
-                
-                # Calcular tiempo de ejecución
-                end_time = datetime.now()
-                execution_time = (end_time - start_time).total_seconds()
-                
-                logger.info("=" * 100)
-                logger.info(f"✓ PROCESAMIENTO COMPLETADO en {execution_time:.2f} segundos")
-                logger.info("=" * 100)
-                
-                # Preparar respuesta
-                return AssignmentResponse(
-                    success=True,
-                    message=f"Contratos fijos manuales procesados: {stats['inserted']} insertados, {stats['already_assigned']} ya existentes (Cobyser: {stats['by_user'].get(45, {}).get('inserted', 0)}, Serlefin: {stats['by_user'].get(81, {}).get('inserted', 0)})",
-                    execution_time=execution_time,
-                    results={
-                        'total_provided': stats['total_provided'],
-                        'already_assigned': stats['already_assigned'],
-                        'in_managements': stats['in_managements'],
-                        'inserted': stats['inserted'],
-                        'by_user': stats['by_user']
-                    },
-                    timestamp=end_time.isoformat()
-                )
-    
-    except ProcessLockError as e:
-        logger.warning(f"⚠️ Proceso bloqueado: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "Process already running",
-                "message": str(e),
-                "suggestion": "Espera a que el proceso actual termine"
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"✗ Error crítico en procesamiento de contratos manuales: {str(e)}", exc_info=True)
-        
-        error_time = (datetime.now() - start_time).total_seconds()
-        
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Internal server error",
-                "message": f"Error durante el procesamiento: {str(e)}",
-                "execution_time": error_time,
-                "timestamp": datetime.now().isoformat()
-            }
-        )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "error": "Endpoint disabled",
+            "message": "La operación de contratos fijos manuales ya no está disponible.",
+        },
+    )
 

@@ -1,5 +1,5 @@
-"""
-Servicio extendido para generación de reportes detallados de asignación
+﻿"""
+Servicio extendido para generaciÃ³n de reportes detallados de asignaciÃ³n
 """
 import psycopg2
 import pandas as pd
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ReportServiceExtended:
-    """Servicio para generación de reportes detallados con información de contratos fijos"""
+    """Servicio para generaciÃ³n de reportes detallados con informaciÃ³n de contratos fijos"""
     
     def __init__(self):
         self.db_config_prod = {
@@ -342,7 +342,7 @@ ORDER BY c.id ASC;
         contracts: List[int]
     ) -> Tuple[str, pd.DataFrame]:
         """
-        Genera reporte detallado para un usuario específico
+        Genera reporte detallado para un usuario especÃ­fico
         
         Returns:
             Tuple[str, pd.DataFrame]: (ruta_archivo, dataframe)
@@ -354,7 +354,7 @@ ORDER BY c.id ASC;
         lista_contratos = ",".join(str(x) for x in contracts)
         
         try:
-            logger.info(f"📊 Generando reporte para {user_name} ({len(contracts)} contratos)...")
+            logger.info(f"ðŸ“Š Generando reporte para {user_name} ({len(contracts)} contratos)...")
             
             conn = psycopg2.connect(
                 host=self.db_config_prod['host'],
@@ -391,7 +391,7 @@ ORDER BY c.id ASC;
                 )
                 df['Contrato_Fijo'] = 'NO'
 
-            # Ajustar comisión para Cobyser (Usuario 45)
+            # Ajustar comisiÃ³n para Cobyser (Usuario 45)
             if user_id == 45:
                 comision_col = cols_by_lower.get('comision')
                 if comision_col:
@@ -413,20 +413,20 @@ ORDER BY c.id ASC;
             
             # Guardar Excel
             df.to_excel(file_path, index=False)
-            logger.info(f"✅ INFORME GENERADO: {file_path}")
+            logger.info(f"âœ… INFORME GENERADO: {file_path}")
             
             return str(file_path), df
             
         except Exception as e:
-            logger.error(f"❌ Error generando reporte para user {user_id}: {e}")
+            logger.error(f"âŒ Error generando reporte para user {user_id}: {e}")
             return None, None
     
     def calculate_distribution_metrics(self) -> Dict:
         """
-        Calcula métricas de distribución 60/40 entre Serlefin y Cobyser
+        Calcula mÃ©tricas de distribuciÃ³n 60/40 entre Serlefin y Cobyser
         
         Returns:
-            Dict: Métricas de distribución
+            Dict: MÃ©tricas de distribuciÃ³n
         """
         try:
             contracts_81 = self.get_assigned_contracts(81)
@@ -469,48 +469,88 @@ ORDER BY c.id ASC;
             }
             
         except Exception as e:
-            logger.error(f"Error calculando métricas: {e}")
+            logger.error(f"Error calculando mÃ©tricas: {e}")
             return {}
     
-    def generate_metrics_html(self, metrics: Dict) -> str:
-        """Genera HTML con las métricas de distribución"""
-        cumple_icon = "✅" if metrics.get('cumple_60_40') else "⚠️"
-        cumple_text = "SÍ CUMPLE" if metrics.get('cumple_60_40') else "NO CUMPLE"
-        
-        return f"""
-        <h3>📊 Métricas de Distribución</h3>
-        <table style="width:100%; border-collapse: collapse;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Casa de Cobranza</th>
-                <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Contratos Asignados</th>
-                <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Porcentaje</th>
-                <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Bases Fijas</th>
-            </tr>
+    def generate_metrics_html(self, metrics: Dict, audience: str = "general") -> str:
+        """
+        Genera HTML con metricas de distribucion.
+
+        audience:
+        - "general": muestra Serlefin + Cobyser + TOTAL
+        - "serlefin": muestra solo Serlefin + TOTAL
+        - "cobyser": muestra solo Cobyser + TOTAL
+        """
+        serlefin_total = int(metrics.get("serlefin", 0) or 0)
+        cobyser_total = int(metrics.get("cobyser", 0) or 0)
+        total_global = int(metrics.get("total", 0) or 0)
+        serlefin_pct = float(metrics.get("serlefin_percent", 0) or 0)
+        cobyser_pct = float(metrics.get("cobyser_percent", 0) or 0)
+
+        audience_key = str(audience or "general").strip().lower()
+        rows = []
+        total_count_row = total_global
+
+        if audience_key == "serlefin":
+            rows = [("Serlefin (User 81)", serlefin_total, serlefin_pct)]
+            total_count_row = serlefin_total
+            audience_note = (
+                "<p><small>Vista filtrada: este correo solo muestra Serlefin.</small></p>"
+            )
+        elif audience_key == "cobyser":
+            rows = [("Cobyser (User 45)", cobyser_total, cobyser_pct)]
+            total_count_row = cobyser_total
+            audience_note = (
+                "<p><small>Vista filtrada: este correo solo muestra Cobyser.</small></p>"
+            )
+        else:
+            rows = [
+                ("Serlefin (User 81)", serlefin_total, serlefin_pct),
+                ("Cobyser (User 45)", cobyser_total, cobyser_pct),
+            ]
+            audience_note = ""
+
+        rows_html = ""
+        for name, qty, pct in rows:
+            rows_html += f"""
             <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Serlefin (User 81)</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('serlefin', 0)}</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('serlefin_percent', 0)}%</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('manual_fixed_81', 0)}</td>
+                <td style=\"border: 1px solid #ddd; padding: 8px;\"><strong>{name}</strong></td>
+                <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{qty}</td>
+                <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{pct}%</td>
             </tr>
-            <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Cobyser (User 45)</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('cobyser', 0)}</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('cobyser_percent', 0)}%</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('manual_fixed_45', 0)}</td>
+            """
+
+        html = f"""
+        <h3>Metricas de Distribucion</h3>
+        <table style=\"width:100%; border-collapse: collapse;\">
+            <tr style=\"background-color: #f0f0f0;\">
+                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Casa de Cobranza</th>
+                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Contratos Asignados</th>
+                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Porcentaje</th>
             </tr>
-            <tr style="background-color: #f9f9f9; font-weight: bold;">
-                <td style="border: 1px solid #ddd; padding: 8px;">TOTAL</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('total', 0)}</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">100%</td>
-                <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{metrics.get('manual_fixed_81', 0) + metrics.get('manual_fixed_45', 0)}</td>
+            {rows_html}
+            <tr style=\"background-color: #f9f9f9; font-weight: bold;\">
+                <td style=\"border: 1px solid #ddd; padding: 8px;\">TOTAL</td>
+                <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{total_count_row}</td>
+                <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">100%</td>
             </tr>
         </table>
-        <p style="margin-top: 15px;">
-            <strong>{cumple_icon} Cumplimiento 60/40:</strong> {cumple_text}<br>
-            <small>Meta: Serlefin 60% / Cobyser 40% (±2% tolerancia)</small>
-        </p>
+        {audience_note}
         """
 
+        if audience_key == "general":
+            cumple_icon = "OK" if metrics.get("cumple_60_40") else "ALERTA"
+            cumple_text = "SI CUMPLE" if metrics.get("cumple_60_40") else "NO CUMPLE"
+            html += f"""
+            <p style=\"margin-top: 15px;\">
+                <strong>{cumple_icon} Cumplimiento 60/40:</strong> {cumple_text}<br>
+                <small>Meta: Serlefin 60% / Cobyser 40% (tolerancia +/-2%)</small>
+            </p>
+            """
+
+        return html
 
 # Instancia global
 report_service_extended = ReportServiceExtended()
+
+

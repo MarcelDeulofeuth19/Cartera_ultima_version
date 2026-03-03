@@ -217,8 +217,10 @@ class RuntimeConfigService:
         if abs(total - 100.0) > 0.001:
             raise ValueError("La suma de porcentajes debe ser 100")
 
-        if min_days < 0:
-            raise ValueError("El rango minimo no puede ser negativo")
+        if min_days < int(settings.DAYS_THRESHOLD):
+            raise ValueError(
+                f"El rango minimo para casas de cobranza debe ser >= {int(settings.DAYS_THRESHOLD)} dias"
+            )
         if max_days < min_days:
             raise ValueError("El rango maximo no puede ser menor al minimo")
 

@@ -2,6 +2,7 @@
 ConfiguraciÃ³n centralizada de la aplicaciÃ³n.
 Gestiona las credenciales de bases de datos y parÃ¡metros del sistema.
 """
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -15,6 +16,20 @@ class Settings(BaseSettings):
     APP_NAME: str = "Sistema de AsignaciÃ³n de Contratos"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def _normalize_debug_value(cls, value):
+        """
+        Acepta valores no estandar de entorno (ej: DEBUG=release) sin romper startup.
+        """
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "debug"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+                return False
+        return value
     
     # MySQL (alocreditprod) - Base de datos de contratos
     MYSQL_HOST: str = "57.130.40.1"
@@ -72,16 +87,24 @@ class Settings(BaseSettings):
     LOCK_FILE: str = "assignment_process.lock"
     LOCK_TIMEOUT: int = 300  # 5 minutos de timeout
 
-    # Scheduler automatico de asignacion (todos los dias 3:00 AM)
+    # Scheduler automatico de asignacion (martes y jueves 6:00 AM)
     AUTO_ASSIGNMENT_ENABLED: bool = True
-    AUTO_ASSIGNMENT_HOUR: int = 3
+    AUTO_ASSIGNMENT_HOUR: int = 6
     AUTO_ASSIGNMENT_MINUTE: int = 0
     AUTO_ASSIGNMENT_TIMEZONE: str = "America/Bogota"
     # Python weekday: lunes=0 ... domingo=6
-    AUTO_ASSIGNMENT_WEEKDAYS: str = "0,1,2,3,4,5,6"
+    AUTO_ASSIGNMENT_WEEKDAYS: str = "1,3"
 
     # Correos de notificacion (separados por coma)
-    NOTIFICATION_RECIPIENTS: str = "emduelofeuth@alocredit.co"
+    # - NOTIFICATION_RECIPIENTS: recibe notificacion con ambas bases
+    # - COBYSER_NOTIFICATION_RECIPIENTS: recibe notificacion + base de Cobyser
+    # - SERLEFIN_NOTIFICATION_RECIPIENTS: recibe solo notificacion (sin Excel)
+    NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co,kcamargo@alocredit.co"
+    COBYSER_NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co"
+    SERLEFIN_NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co"
+
+    # Lista negra de contratos (TXT)
+    CONTRACT_BLACKLIST_FILE: str = "app/data/contract_blacklist.txt"
 
     # SMTP para envio de correos
     SMTP_SERVER: str = "smtp-relay.gmail.com"
@@ -121,6 +144,13 @@ class Settings(BaseSettings):
     # Panel visual protegido por hash (acceso por URL secreta)
     ADMIN_PANEL_HASH: str = "3e63c8d8d94f44288b5f90d2c16fd101"
     ADMIN_DEFAULT_AUDIT_ACTOR: str = "mdeulofeuth@alocredit.co"
+    ADMIN_AUTH_ENABLED: bool = True
+    ADMIN_AUTH_DEFAULT_USERNAME: str = "admin"
+    ADMIN_AUTH_DEFAULT_PASSWORD: str = "ChangeMe123!"
+    ADMIN_AUTH_SECRET: str = "replace-this-admin-auth-secret"
+    ADMIN_AUTH_SESSION_HOURS: int = 12
+    ADMIN_AUTH_COOKIE_NAME: str = "alocredit_admin_session"
+    ADMIN_AUTH_COOKIE_SECURE: bool = False
     
     class Config:
         env_file = ".env"
@@ -141,15 +171,36 @@ class Settings(BaseSettings):
         """Retorna todos los usuarios de ambas casas de cobranza"""
         return self.COBYSER_USERS + self.SERLEFIN_USERS
 
-    @property
-    def notification_recipients(self) -> List[str]:
-        """Lista de correos para envio de notificaciones."""
+    @staticmethod
+    def _parse_recipients(raw_value: str) -> List[str]:
+        """Convierte una cadena CSV de correos en lista unica y normalizada."""
         recipients = []
-        for raw_recipient in self.NOTIFICATION_RECIPIENTS.split(","):
-            recipient = raw_recipient.strip()
+        for raw_recipient in str(raw_value or "").split(","):
+            recipient = raw_recipient.strip().lower()
             if recipient and recipient not in recipients:
                 recipients.append(recipient)
         return recipients
+
+    @property
+    def notification_recipients(self) -> List[str]:
+        """
+        Destinatarios que reciben notificacion con ambas bases (Serlefin y Cobyser).
+        """
+        return self._parse_recipients(self.NOTIFICATION_RECIPIENTS)
+
+    @property
+    def cobyser_notification_recipients(self) -> List[str]:
+        """
+        Destinatarios que reciben notificacion y base de Cobyser.
+        """
+        return self._parse_recipients(self.COBYSER_NOTIFICATION_RECIPIENTS)
+
+    @property
+    def serlefin_notification_recipients(self) -> List[str]:
+        """
+        Destinatarios que reciben solo notificacion de Serlefin (sin adjunto).
+        """
+        return self._parse_recipients(self.SERLEFIN_NOTIFICATION_RECIPIENTS)
 
     @property
     def auto_assignment_weekdays(self) -> List[int]:
@@ -170,7 +221,7 @@ class Settings(BaseSettings):
 
         if weekdays:
             return weekdays
-        return [0, 1, 2, 3, 4]
+        return [1, 3]
 
     @property
     def serlefin_attachment_exception_recipients(self) -> List[str]:

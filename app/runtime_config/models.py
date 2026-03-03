@@ -3,7 +3,7 @@ Modelos para configuracion dinamica y auditoria del panel administrativo.
 """
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 RuntimeConfigBase = declarative_base()
@@ -48,4 +48,26 @@ class RuntimeAssignmentConfigAudit(RuntimeConfigBase):
     new_value = Column(String(255), nullable=True)
     reason = Column(Text, nullable=True)
     client_ip = Column(String(100), nullable=True)
+
+
+class RuntimeAdminPanelUser(RuntimeConfigBase):
+    """
+    Usuarios de autenticacion para panel administrativo.
+    """
+
+    __tablename__ = "runtime_admin_panel_users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(120), nullable=False, unique=True, index=True)
+    password_salt = Column(String(128), nullable=False)
+    password_hash = Column(String(256), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+    last_login_at = Column(DateTime, nullable=True)
 

@@ -3,7 +3,7 @@ Servicio de consulta de contratos desde MySQL.
 Obtiene contratos con atraso desde alocreditprod.
 """
 import logging
-from typing import List, Dict
+from typing import List, Dict, Set, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ class ContractService:
         self,
         min_days: int = None,
         max_days: int = None,
+        excluded_contract_ids: Optional[Set[int]] = None,
     ) -> List[Dict]:
         """
         Obtiene contratos con dias de atraso entre min_days y max_days.
@@ -47,6 +48,20 @@ class ContractService:
             f"Consultando contratos entre {min_days} y {max_days} dias de atraso..."
         )
 
+        exclusion_clause = ""
+        if excluded_contract_ids:
+            filtered_ids = sorted(
+                int(contract_id)
+                for contract_id in excluded_contract_ids
+                if int(contract_id) > 0
+            )
+            if filtered_ids:
+                exclusion_clause = (
+                    "  AND ca.contract_id NOT IN ("
+                    + ",".join(str(contract_id) for contract_id in filtered_ids)
+                    + ")\n"
+                )
+
         query = f"""
         SELECT
             ca.contract_id,
@@ -59,9 +74,10 @@ class ContractService:
           AND ca.outstanding_principal > 0
           AND ca.contract_amortization_payment_status_id = 4
           AND c.contracts_status_id NOT IN (5, 7)
+        {exclusion_clause}
         GROUP BY ca.contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
-        ORDER BY days_overdue DESC
+        ORDER BY days_overdue ASC, ca.contract_id ASC
         """
 
         try:

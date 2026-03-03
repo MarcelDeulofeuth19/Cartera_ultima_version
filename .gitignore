@@ -56,3 +56,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+# Docker persistent data (mantener solo estructura)
+docker-data/internal-config-db/*
+!docker-data/internal-config-db/.gitkeep
