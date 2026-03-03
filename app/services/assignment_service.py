@@ -1142,6 +1142,12 @@ class AssignmentService:
         report_sent = bool(results.get("report_sent", False))
         error_message = str(results.get("error") or "").strip()
         report_error = str(results.get("report_error") or "").strip()
+        execution_reference = str(
+            results.get("finished_at")
+            or results.get("started_at")
+            or datetime.now().isoformat()
+        )
+        execution_day = execution_reference.split("T")[0].split(" ")[0]
 
         subject = f"[ALOCREDIT] Proceso de asignacion automatica finalizado - {status_label}"
 
@@ -1159,6 +1165,7 @@ class AssignmentService:
           <h2>Proceso de Asignacion Finalizado ({status_label})</h2>
           <p><strong>Tipo:</strong> Ejecucion automatica programada</p>
           <p><strong>Horario programado:</strong> {int(settings.AUTO_ASSIGNMENT_HOUR):02d}:{int(settings.AUTO_ASSIGNMENT_MINUTE):02d} ({settings.AUTO_ASSIGNMENT_TIMEZONE})</p>
+          <p><strong>Se asigno el dia:</strong> {execution_day}</p>
           <p><strong>Inicio:</strong> {results.get("started_at", "-")}</p>
           <p><strong>Fin:</strong> {results.get("finished_at", "-")}</p>
           <p><strong>Duracion (s):</strong> {results.get("duration_seconds", "-")}</p>
