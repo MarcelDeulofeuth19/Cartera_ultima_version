@@ -151,6 +151,10 @@ class AssignmentService:
 
     def _load_contract_blacklist(self) -> Set[int]:
         """Carga lista negra de contratos desde TXT."""
+        if not settings.BLACKLIST_ENABLED:
+            logger.info("Lista negra deshabilitada por configuracion (BLACKLIST_ENABLED=False)")
+            return set()
+
         blocked_ids = blacklist_service.load_contract_ids()
         if blocked_ids:
             logger.info("Lista negra activa: %s contratos bloqueados", len(blocked_ids))

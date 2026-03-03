@@ -49,7 +49,7 @@ class LockStatusResponse(BaseModel):
     Ejecuta el proceso completo de asignación de contratos:
     1. Adquiere lock para garantizar una única instancia
     2. Consulta contratos en el rango dinámico configurado
-    3. Excluye contratos de lista negra y limpia cualquier asignación bloqueada activa
+    3. Si lista negra esta habilitada, excluye contratos bloqueados y limpia asignaciones activas bloqueadas
     4. Balancea y asigna contratos (SERLEFIN/COBYSER) con alternancia y cuota dinámica
     5. Registra historial y genera reportes
     

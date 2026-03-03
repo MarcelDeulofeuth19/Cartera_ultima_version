@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     SERLEFIN_NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co"
 
     # Lista negra de contratos (TXT)
+    BLACKLIST_ENABLED: bool = False
     CONTRACT_BLACKLIST_FILE: str = "app/data/contract_blacklist.txt"
 
     # SMTP para envio de correos
