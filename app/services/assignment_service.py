@@ -5,6 +5,7 @@ Implementa la lÃ³gica de contratos fijos, limpieza y balanceo configurable.
 import logging
 import math
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Set, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -1210,6 +1211,7 @@ class AssignmentService:
         Returns:
             bool: True si todos los correos configurados fueron enviados
         """
+        generated_report_files: List[str] = []
         try:
             from app.services.email_service import email_service
             from app.services.report_service_extended import report_service_extended
@@ -1231,6 +1233,8 @@ class AssignmentService:
                 user_name="Serlefin",
                 contracts=contracts_81,
             )
+            if file_81:
+                generated_report_files.append(file_81)
 
             contracts_45 = report_service_extended.get_assigned_contracts(45)
             file_45, _ = report_service_extended.generate_report_for_user(
@@ -1238,6 +1242,8 @@ class AssignmentService:
                 user_name="Cobyser",
                 contracts=contracts_45,
             )
+            if file_45:
+                generated_report_files.append(file_45)
 
             if not file_81 and not file_45:
                 logger.error("No se pudieron generar los archivos de informe")
@@ -1419,6 +1425,35 @@ class AssignmentService:
         except Exception as e:
             logger.error(f"Error en generate_and_send_reports: {e}")
             return False
+        finally:
+            self._cleanup_generated_report_files(generated_report_files)
+
+    @staticmethod
+    def _cleanup_generated_report_files(file_paths: List[str]) -> None:
+        """
+        Elimina reportes generados temporalmente despues del envio por correo.
+        """
+        if not file_paths:
+            return
+
+        unique_paths = []
+        for raw_path in file_paths:
+            normalized = str(raw_path or "").strip()
+            if normalized and normalized not in unique_paths:
+                unique_paths.append(normalized)
+
+        for file_path in unique_paths:
+            try:
+                path = Path(file_path)
+                if path.exists():
+                    path.unlink()
+                    logger.info("Reporte temporal eliminado: %s", path)
+            except Exception as cleanup_error:
+                logger.warning(
+                    "No se pudo eliminar reporte temporal %s: %s",
+                    file_path,
+                    cleanup_error,
+                )
 
     def finalize_all_active_assignments(self) -> Dict[str, int]:
         """

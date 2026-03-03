@@ -44,9 +44,11 @@ assignment_process.log
 *.lock
 assignment_process.lock
 
-# Reports (comentar si quieres versionar los reportes)
+# Reports (no versionar archivos generados)
 reports/*.txt
 reports/*.xlsx
+reports/*.xls
+reports/*.csv
 
 # OS
 .DS_Store
