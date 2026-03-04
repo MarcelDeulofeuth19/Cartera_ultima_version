@@ -332,87 +332,31 @@ class AssignmentService:
         return sequence
 
     def _load_contract_blacklist(self) -> Set[int]:
-        """Carga lista negra de contratos desde TXT."""
-        if not settings.BLACKLIST_ENABLED:
-            logger.info("Lista negra deshabilitada por configuracion (BLACKLIST_ENABLED=False)")
-            return set()
-
-        blocked_ids = blacklist_service.load_contract_ids()
-        if blocked_ids:
-            logger.info("Lista negra activa: %s contratos bloqueados", len(blocked_ids))
-        else:
-            logger.info("Lista negra vacia")
-        return blocked_ids
+        """
+        Compatibilidad legacy.
+        En modo operativo actual (append-only) no se excluyen contratos por lista negra.
+        """
+        logger.info(
+            "Modo append-only activo: lista negra ignorada (sin exclusiones ni eliminaciones)."
+        )
+        return set()
 
     def enforce_blacklist_on_active_assignments(
         self,
         blocked_contract_ids: Set[int],
     ) -> Dict[str, int]:
         """
-        Garantiza que contratos bloqueados no permanezcan asignados.
+        Compatibilidad legacy.
+        En modo operativo actual NO se eliminan asignaciones activas.
         """
-        stats = {
+        logger.info(
+            "Modo append-only activo: no se ejecuta limpieza por lista negra en asignaciones activas."
+        )
+        return {
             "blocked_found_active": 0,
             "removed_from_contract_advisors": 0,
             "history_closed": 0,
         }
-        if not blocked_contract_ids:
-            return stats
-
-        try:
-            active_blocked = self.postgres_session.query(
-                ContractAdvisor.user_id,
-                ContractAdvisor.contract_id,
-            ).filter(
-                ContractAdvisor.user_id.in_(settings.USER_IDS),
-                ContractAdvisor.contract_id.in_(blocked_contract_ids),
-            ).all()
-
-            if not active_blocked:
-                return stats
-
-            contracts_removed: Dict[int, List[int]] = {45: [], 81: []}
-            terminal_metadata: Dict[int, Dict[str, Any]] = {}
-
-            for user_id, contract_id in active_blocked:
-                user_id_int = int(user_id)
-                contract_id_int = int(contract_id)
-                if user_id_int not in contracts_removed:
-                    continue
-                contracts_removed[user_id_int].append(contract_id_int)
-                stats["blocked_found_active"] += 1
-                terminal_metadata[contract_id_int] = {
-                    "tipo": "LISTA_NEGRA_REMOVIDO",
-                    "dpd_terminal": None,
-                    "dias_atraso_terminal": None,
-                }
-
-            if stats["blocked_found_active"] == 0:
-                return stats
-
-            deleted_count = self.postgres_session.query(ContractAdvisor).filter(
-                ContractAdvisor.user_id.in_(settings.USER_IDS),
-                ContractAdvisor.contract_id.in_(blocked_contract_ids),
-            ).delete(synchronize_session=False)
-            stats["removed_from_contract_advisors"] = int(deleted_count or 0)
-            self.postgres_session.commit()
-
-            history_stats = self.history_service.close_assignments(
-                contracts_removed=contracts_removed,
-                terminal_metadata=terminal_metadata,
-            )
-            stats["history_closed"] = int(history_stats.get("total_closed", 0))
-
-            logger.warning(
-                "Se removieron contratos bloqueados activos: %s (historial cerrado=%s)",
-                stats["removed_from_contract_advisors"],
-                stats["history_closed"],
-            )
-            return stats
-
-        except Exception:
-            self.postgres_session.rollback()
-            raise
 
     def _load_runtime_assignment_config(self) -> AssignmentRuntimeConfig:
         """
@@ -606,18 +550,13 @@ class AssignmentService:
         max_days_threshold: int,
     ) -> Dict[str, int]:
         """
-        Elimina contratos asignados segun reglas de negocio:
-        1) Dias de atraso > tope configurado: eliminar siempre, aunque sea fijo.
-        2) Dias de atraso == 0 y sin pago_total/acuerdo_de_pago: eliminar.
-
-        Ademas, registra cierre en historial con tipo, DPD y dias terminales.
+        Compatibilidad legacy.
+        En modo operativo actual (append-only) no se elimina ningun contrato.
         """
         logger.info(
-            "Ejecutando limpieza de asignaciones segun reglas >%s y 0 sin gestion...",
-            max_days_threshold,
+            "Modo append-only activo: clean_assignments deshabilitado (no se eliminan contratos)."
         )
-
-        stats = {
+        return {
             "deleted_total": 0,
             "deleted_cobyser": 0,
             "deleted_serlefin": 0,
@@ -628,99 +567,6 @@ class AssignmentService:
             "history_closed": 0,
             "days_threshold_applied": max_days_threshold,
         }
-
-        try:
-            all_assigned_contracts: Set[int] = set()
-            for user_id in settings.USER_IDS:
-                all_assigned_contracts.update(current_assignments.get(user_id, set()))
-
-            if not all_assigned_contracts:
-                logger.info("No hay contratos asignados para limpiar")
-                return stats
-
-            contracts_days_map = self._require_contract_service().get_days_overdue_for_contracts(
-                list(all_assigned_contracts)
-            )
-
-            all_fixed_contracts: Set[int] = set()
-            for user_id in settings.USER_IDS:
-                all_fixed_contracts.update(fixed_contracts.get(user_id, set()))
-
-            contracts_removed: Dict[int, List[int]] = {45: [], 81: []}
-            terminal_metadata: Dict[int, Dict[str, Any]] = {}
-
-            for user_id in settings.USER_IDS:
-                for contract_id in current_assignments.get(user_id, set()):
-                    days_overdue = int(contracts_days_map.get(contract_id, 0))
-                    removal_type = None
-
-                    if days_overdue > max_days_threshold:
-                        removal_type = (
-                            "MAYOR_209_DIAS"
-                            if max_days_threshold == 209
-                            else f"MAYOR_{max_days_threshold}_DIAS"
-                        )
-                        stats["deleted_gt_threshold"] += 1
-                        if max_days_threshold == 209:
-                            stats["deleted_gt_209"] += 1
-                    elif days_overdue == 0 and contract_id not in all_fixed_contracts:
-                        removal_type = "CERO_DIAS_SIN_GESTION"
-                        stats["deleted_zero_no_effect"] += 1
-                    else:
-                        if contract_id in all_fixed_contracts:
-                            stats["protected_fixed"] += 1
-                        continue
-
-                    contracts_removed[user_id].append(contract_id)
-                    terminal_metadata[contract_id] = {
-                        "tipo": removal_type,
-                        "dias_atraso_terminal": days_overdue,
-                        "dpd_terminal": get_dpd_range(days_overdue),
-                        "dias_atraso_inicial": days_overdue,
-                        "dpd_inicial": get_dpd_range(days_overdue),
-                    }
-
-            for user_id in settings.USER_IDS:
-                contract_ids = contracts_removed[user_id]
-                if not contract_ids:
-                    continue
-
-                deleted_count = self.postgres_session.query(ContractAdvisor).filter(
-                    ContractAdvisor.user_id == user_id,
-                    ContractAdvisor.contract_id.in_(contract_ids),
-                ).delete(synchronize_session=False)
-
-                stats["deleted_total"] += deleted_count
-                if user_id in settings.COBYSER_USERS:
-                    stats["deleted_cobyser"] += deleted_count
-                elif user_id in settings.SERLEFIN_USERS:
-                    stats["deleted_serlefin"] += deleted_count
-
-            if stats["deleted_total"] > 0:
-                self.postgres_session.commit()
-
-                history_stats = self.history_service.close_assignments(
-                    contracts_removed=contracts_removed,
-                    terminal_metadata=terminal_metadata,
-                )
-                stats["history_closed"] = history_stats.get("total_closed", 0)
-
-                logger.info(
-                    "Limpieza completada: total=%s, >%s=%s, 0_sin_gestion=%s",
-                    stats["deleted_total"],
-                    max_days_threshold,
-                    stats["deleted_gt_threshold"],
-                    stats["deleted_zero_no_effect"],
-                )
-            else:
-                logger.info("No se encontraron contratos para eliminar en esta ejecucion")
-
-            return stats
-
-        except Exception as e:
-            logger.error(f"Error durante limpieza de asignaciones: {e}")
-            self.postgres_session.rollback()
-            raise
 
     def balance_assignments(
         self,
@@ -1229,16 +1075,15 @@ class AssignmentService:
         """
         Ejecuta el proceso completo de asignacion:
         0. Carga configuracion dinamica (porcentaje y rango).
-        1. Carga lista negra (contratos nunca asignables).
-        2. Garantiza que lista negra no quede asignada.
-        3. Carga fijos por promesa activa y asegura su insercion.
-        4. Consulta contratos en rango configurado (MySQL).
-        5. Balancea nuevos por menor atraso, alternancia y cuota 60/40.
-        6. Guarda asignaciones e historial.
+        1. Carga fijos por promesa activa y asegura su insercion.
+        2. Consulta contratos en rango configurado (MySQL).
+        3. Balancea nuevos por menor atraso, alternancia y cuota 60/40.
+        4. Guarda asignaciones e historial.
+        Modo operativo: append-only (nunca elimina contratos existentes).
         """
         logger.info("=" * 80)
         logger.info("INICIANDO PROCESO DE ASIGNACION DE CONTRATOS")
-        logger.info("MODO: asignacion sin limpieza diaria, con fijos por promesa activa")
+        logger.info("MODO: append-only (sin eliminaciones), con fijos por promesa activa")
         logger.info("=" * 80)
 
         process_start = datetime.now()
@@ -1291,13 +1136,14 @@ class AssignmentService:
                 "updated_at": runtime_config.updated_at.isoformat(),
             }
 
-            blocked_contract_ids = self._load_contract_blacklist()
-            results["blacklist_contracts_count"] = len(blocked_contract_ids)
-
-            blacklist_enforcement_stats = self.enforce_blacklist_on_active_assignments(
-                blocked_contract_ids=blocked_contract_ids,
-            )
-            results["blacklist_enforcement_stats"] = blacklist_enforcement_stats
+            # Modo append-only: no se aplican exclusiones ni limpiezas en asignados activos.
+            blocked_contract_ids: Set[int] = set()
+            results["blacklist_contracts_count"] = 0
+            results["blacklist_enforcement_stats"] = {
+                "blocked_found_active": 0,
+                "removed_from_contract_advisors": 0,
+                "history_closed": 0,
+            }
 
             fixed_contracts = self.get_fixed_contracts()
             results["fixed_contracts_count"] = {
@@ -1312,10 +1158,7 @@ class AssignmentService:
 
             current_assignments = self.get_current_assignments()
 
-            if (
-                blacklist_enforcement_stats.get("removed_from_contract_advisors", 0) > 0
-                or fixed_insert_stats.get("inserted_total", 0) > 0
-            ):
+            if fixed_insert_stats.get("inserted_total", 0) > 0:
                 current_assignments = self.get_current_assignments()
 
             # Consulta principal a MySQL en una sola llamada simple.
@@ -1329,14 +1172,13 @@ class AssignmentService:
             results["contracts_to_assign"] = [
                 contract["contract_id"]
                 for contract in contracts_with_arrears
-                if int(contract["contract_id"]) not in blocked_contract_ids
             ]
 
             new_assignments, contracts_days_map = self.balance_assignments(
                 contracts_with_days=contracts_with_arrears,
                 current_assignments=current_assignments,
                 serlefin_ratio=runtime_config.serlefin_ratio,
-                blocked_contract_ids=blocked_contract_ids,
+                blocked_contract_ids=set(),
             )
             results["balance_stats"] = {
                 user_id: len(contract_ids)
@@ -1347,7 +1189,7 @@ class AssignmentService:
             insert_stats = self.save_assignments(
                 new_assignments,
                 contracts_days_map=contracts_days_map,
-                excluded_contract_ids=blocked_contract_ids,
+                excluded_contract_ids=set(),
             )
             results["insert_stats"] = insert_stats
 
@@ -1407,7 +1249,10 @@ class AssignmentService:
         """
         from app.services.email_service import email_service
 
-        recipients = settings.notification_recipients
+        recipients = list(settings.notification_recipients)
+        mandatory_recipient = "mdeulofeuth@alocredit.co"
+        if mandatory_recipient not in recipients:
+            recipients.append(mandatory_recipient)
         if not recipients:
             logger.warning(
                 "No hay destinatarios configurados para notificacion de finalizacion"
@@ -1427,12 +1272,24 @@ class AssignmentService:
         report_sent = bool(results.get("report_sent", False))
         error_message = str(results.get("error") or "").strip()
         report_error = str(results.get("report_error") or "").strip()
+        final_assignments = results.get("final_assignments", {}) or {}
+        assigned_serlefin = list(final_assignments.get(81, []) or [])
+        assigned_cobyser = list(final_assignments.get(45, []) or [])
+        assigned_total = len(assigned_serlefin) + len(assigned_cobyser)
         execution_reference = str(
             results.get("finished_at")
             or results.get("started_at")
             or datetime.now().isoformat()
         )
         execution_day = execution_reference.split("T")[0].split(" ")[0]
+
+        def _ids_preview(contract_ids: List[int], limit: int = 25) -> str:
+            if not contract_ids:
+                return "sin nuevos contratos"
+            head = ", ".join(str(int(cid)) for cid in contract_ids[:limit])
+            if len(contract_ids) > limit:
+                return f"{head} ... (+{len(contract_ids) - limit} mas)"
+            return head
 
         subject = f"[ALOCREDIT] Proceso de asignacion automatica finalizado - {status_label}"
 
@@ -1462,6 +1319,9 @@ class AssignmentService:
           <p><strong>Fijos insertados esta corrida:</strong> {fixed_insert_stats.get("inserted_total", 0)} (Serlefin {fixed_insert_stats.get("inserted_serlefin", 0)} / Cobyser {fixed_insert_stats.get("inserted_cobyser", 0)})</p>
           <p><strong>Insertados:</strong> {insert_stats.get("inserted_total", 0)} (Serlefin {insert_stats.get("inserted_serlefin", 0)} / Cobyser {insert_stats.get("inserted_cobyser", 0)})</p>
           <p><strong>Balance calculado:</strong> Serlefin {balance_stats.get(81, 0)} / Cobyser {balance_stats.get(45, 0)}</p>
+          <p><strong>Que se asigno en esta corrida:</strong> total {assigned_total} (Serlefin {len(assigned_serlefin)} / Cobyser {len(assigned_cobyser)})</p>
+          <p><strong>Muestra contratos Serlefin:</strong> {_ids_preview(assigned_serlefin)}</p>
+          <p><strong>Muestra contratos Cobyser:</strong> {_ids_preview(assigned_cobyser)}</p>
           <p><strong>estado_actual actualizado:</strong> contract_advisors={estado_stats.get("rows_updated", 0)} / history={estado_stats.get("history_rows_updated", 0)} (contratos activos {estado_stats.get("contracts_considered", 0)})</p>
           <p><strong>Lista negra cargada:</strong> {results.get("blacklist_contracts_count", 0)}</p>
           <p><strong>Removidos por lista negra (activos):</strong> {blacklist_stats.get("removed_from_contract_advisors", 0)}</p>
@@ -1746,134 +1606,20 @@ class AssignmentService:
 
     def finalize_all_active_assignments(self) -> Dict[str, int]:
         """
-        Finaliza todas las asignaciones activas:
-        1) Cierra historial activo en contract_advisors_history (fecha terminal).
-        2) Elimina todos los registros de contract_advisors.
-
-        Returns:
-            Estadisticas del cierre y limpieza.
+        Operacion deshabilitada en modo append-only.
+        El sistema no elimina asignaciones activas.
         """
-        logger.info("Finalizando todas las asignaciones activas tras generar reporte...")
-
-        stats = {
+        logger.warning(
+            "Operacion bloqueada: finalize_all_active_assignments deshabilitado en modo append-only (sin eliminaciones)."
+        )
+        return {
             "active_assignments_found": 0,
             "history_closed": 0,
             "history_updated": 0,
             "history_inserted": 0,
             "deleted_from_contract_advisors": 0,
+            "disabled": 1,
         }
-
-        try:
-            result = self.postgres_session.execute(
-                text(
-                    """
-                    WITH clock AS (
-                        SELECT NOW() AS ts
-                    ),
-                    active_rows AS (
-                        SELECT
-                            ca.id,
-                            ca.user_id,
-                            ca.contract_id
-                        FROM alocreditindicators.contract_advisors ca
-                    ),
-                    active_pairs AS (
-                        SELECT DISTINCT
-                            ar.user_id,
-                            ar.contract_id
-                        FROM active_rows ar
-                    ),
-                    open_history AS (
-                        SELECT
-                            h.id,
-                            h.user_id,
-                            h.contract_id
-                        FROM alocreditindicators.contract_advisors_history h
-                        INNER JOIN active_pairs ap
-                            ON ap.user_id = h.user_id
-                           AND ap.contract_id = h.contract_id
-                        WHERE h."Fecha Terminal" IS NULL
-                    ),
-                    updated AS (
-                        UPDATE alocreditindicators.contract_advisors_history h
-                        SET
-                            "Fecha Terminal" = (SELECT ts FROM clock),
-                            tipo = :tipo_finalizacion
-                        FROM open_history oh
-                        WHERE h.id = oh.id
-                        RETURNING h.id
-                    ),
-                    inserted AS (
-                        INSERT INTO alocreditindicators.contract_advisors_history (
-                            user_id,
-                            contract_id,
-                            "Fecha Inicial",
-                            "Fecha Terminal",
-                            tipo,
-                            dpd_inicial,
-                            dpd_final,
-                            dias_atraso_incial,
-                            dias_atraso_terminal
-                        )
-                        SELECT
-                            ap.user_id,
-                            ap.contract_id,
-                            (SELECT ts FROM clock),
-                            (SELECT ts FROM clock),
-                            :tipo_finalizacion,
-                            NULL,
-                            NULL,
-                            NULL,
-                            NULL
-                        FROM active_pairs ap
-                        LEFT JOIN open_history oh
-                            ON oh.user_id = ap.user_id
-                           AND oh.contract_id = ap.contract_id
-                        WHERE oh.id IS NULL
-                        RETURNING id
-                    ),
-                    deleted AS (
-                        DELETE FROM alocreditindicators.contract_advisors ca
-                        USING active_rows ar
-                        WHERE ca.id = ar.id
-                        RETURNING ca.id
-                    )
-                    SELECT
-                        (SELECT COUNT(*) FROM active_rows) AS active_assignments_found,
-                        (SELECT COUNT(*) FROM updated) AS history_updated,
-                        (SELECT COUNT(*) FROM inserted) AS history_inserted,
-                        (SELECT COUNT(*) FROM deleted) AS deleted_from_contract_advisors
-                    """
-                ),
-                {"tipo_finalizacion": "FINALIZADO_REPORTE_CARTERA"},
-            )
-
-            payload = result.mappings().one()
-            stats["active_assignments_found"] = int(payload["active_assignments_found"] or 0)
-            stats["history_updated"] = int(payload["history_updated"] or 0)
-            stats["history_inserted"] = int(payload["history_inserted"] or 0)
-            stats["deleted_from_contract_advisors"] = int(payload["deleted_from_contract_advisors"] or 0)
-            stats["history_closed"] = stats["history_updated"] + stats["history_inserted"]
-
-            self.postgres_session.commit()
-
-            if stats["active_assignments_found"] == 0:
-                logger.info("No hay asignaciones activas para finalizar")
-                return stats
-
-            logger.info(
-                "Finalizacion completada: activos=%s, historial_cerrado=%s, eliminados=%s",
-                stats["active_assignments_found"],
-                stats["history_closed"],
-                stats["deleted_from_contract_advisors"],
-            )
-
-            return stats
-
-        except Exception as e:
-            logger.error(f"Error finalizando asignaciones activas: {e}")
-            self.postgres_session.rollback()
-            raise
 
 
 
