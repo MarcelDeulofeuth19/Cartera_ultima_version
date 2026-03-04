@@ -669,6 +669,7 @@ def _load_assignment_history_report(
                 h.dpd_final,
                 h.dias_atraso_incial,
                 h.dias_atraso_terminal,
+                COALESCE(NULLIF(TRIM(h.estado_actual::text), ''), 'SIN_ESTADO') AS estado_actual,
                 CASE
                     WHEN h."Fecha Terminal" IS NULL THEN 'ASIGNADO'
                     ELSE 'ELIMINADO'
@@ -1251,12 +1252,20 @@ def _render_assignment_history_report_html(
             dpd_final,
             dias_inicial,
             dias_terminal,
+            estado_actual,
             estado,
         ) = row
 
         fecha_inicial_txt = _format_datetime(fecha_inicial)
         fecha_terminal_txt = _format_datetime(fecha_terminal)
         user_label = _format_user_label(user_id)
+        tipo_text = str(tipo or "-")
+        tipo_badge = (
+            "<span style='display:inline-block;padding:2px 6px;border-radius:999px;background:#fef3c7;color:#92400e;font-size:.72rem;font-weight:700;margin-left:6px'>FIJO</span>"
+            if "FIJO" in tipo_text.upper()
+            else ""
+        )
+        estado_actual_text = str(estado_actual or "-")
 
         table_rows += (
             "<tr>"
@@ -1265,11 +1274,12 @@ def _render_assignment_history_report_html(
             f"<td>{contract_id}</td>"
             f"<td>{html.escape(fecha_inicial_txt)}</td>"
             f"<td>{html.escape(fecha_terminal_txt)}</td>"
-            f"<td>{html.escape(str(tipo or '-'))}</td>"
+            f"<td>{html.escape(tipo_text)}{tipo_badge}</td>"
             f"<td>{html.escape(str(dpd_inicial or '-'))}</td>"
             f"<td>{html.escape(str(dpd_final or '-'))}</td>"
             f"<td>{html.escape(str(dias_inicial if dias_inicial is not None else '-'))}</td>"
             f"<td>{html.escape(str(dias_terminal if dias_terminal is not None else '-'))}</td>"
+            f"<td>{html.escape(estado_actual_text)}</td>"
             f"<td>{html.escape(estado)}</td>"
             "</tr>"
         )
@@ -1277,14 +1287,14 @@ def _render_assignment_history_report_html(
     if not table_rows:
         if int(report.get("total_rows", 0) or 0) > 0:
             table_rows = (
-                "<tr><td colspan='11'>No hay filas en esta pagina. Usa el paginador.</td></tr>"
+                "<tr><td colspan='12'>No hay filas en esta pagina. Usa el paginador.</td></tr>"
             )
         elif report.get("start_date") or report.get("end_date"):
             table_rows = (
-                "<tr><td colspan='11'>Sin registros para filtros aplicados.</td></tr>"
+                "<tr><td colspan='12'>Sin registros para filtros aplicados.</td></tr>"
             )
         else:
-            table_rows = "<tr><td colspan='11'>Sin registros.</td></tr>"
+            table_rows = "<tr><td colspan='12'>Sin registros.</td></tr>"
 
     back_path = f"/{panel_hash}"
     reset_filters_path = (
@@ -1504,6 +1514,7 @@ def _render_assignment_history_report_html(
             <th>DPD Final</th>
             <th>Días Inicial</th>
             <th>Días Terminal</th>
+            <th>Estado Actual</th>
             <th>Estado</th>
           </tr>
         </thead>

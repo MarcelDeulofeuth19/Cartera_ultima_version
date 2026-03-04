@@ -194,3 +194,178 @@ class ContractService:
         except Exception as e:
             logger.error(f"Error al consultar dias de atraso por contrato: {e}")
             raise
+
+    def get_overdue_installments_count_for_contracts(self, contract_ids: List[int]) -> Dict[int, int]:
+        """
+        Obtiene cantidad de cuotas vencidas con la misma logica operativa.
+
+        Reglas:
+        - expiration_date <= CURDATE()
+        - outstanding_principal > 0
+        - contract_amortization_payment_status_id = 4
+        - contrato activo (contracts_status_id NOT IN 5,7)
+        """
+        if not contract_ids:
+            return {}
+
+        logger.info(
+            "Consultando cantidad de cuotas atrasadas para %s contratos...",
+            len(contract_ids),
+        )
+
+        counts_map: Dict[int, int] = {int(contract_id): 0 for contract_id in contract_ids}
+
+        try:
+            batch_size = 1000
+            for i in range(0, len(contract_ids), batch_size):
+                batch = contract_ids[i : i + batch_size]
+                batch_ids = ",".join(str(int(contract_id)) for contract_id in batch)
+
+                query = f"""
+                SELECT
+                    ca.contract_id,
+                    COUNT(*) AS overdue_installments
+                FROM contract_amortization ca
+                INNER JOIN contract c ON c.id = ca.contract_id
+                WHERE ca.contract_id IN ({batch_ids})
+                  AND ca.expiration_date <= CURDATE()
+                  AND ca.outstanding_principal > 0
+                  AND ca.contract_amortization_payment_status_id = 4
+                  AND c.contracts_status_id NOT IN (5, 7)
+                GROUP BY ca.contract_id
+                """
+
+                result = self.mysql_session.execute(text(query))
+                for row in result:
+                    contract_id = int(row[0])
+                    overdue_installments = int(row[1]) if row[1] is not None else 0
+                    counts_map[contract_id] = overdue_installments
+
+            logger.info(
+                "Cantidad de cuotas atrasadas obtenida para %s contratos",
+                len(counts_map),
+            )
+            return counts_map
+
+        except Exception as e:
+            logger.error(
+                "Error al consultar cantidad de cuotas atrasadas por contrato: %s",
+                e,
+            )
+            raise
+
+    def get_current_state_for_contracts(self, contract_ids: List[int]) -> Dict[int, str]:
+        """
+        Obtiene el estado actual del contrato desde alocreditprod.contract.
+
+        Se usa el nombre textual del estado (contracts_status.name) para
+        persistirlo en contract_advisors.estado_actual.
+        """
+        if not contract_ids:
+            return {}
+
+        logger.info(
+            "Consultando estado actual para %s contratos...",
+            len(contract_ids),
+        )
+
+        state_map: Dict[int, str] = {
+            int(contract_id): "SIN_ESTADO"
+            for contract_id in contract_ids
+        }
+
+        try:
+            try:
+                # Estrategia preferida: tabla temporal + JOIN.
+                self.mysql_session.execute(
+                    text(
+                        """
+                        CREATE TEMPORARY TABLE IF NOT EXISTS tmp_contract_state_sync (
+                            contract_id BIGINT PRIMARY KEY
+                        ) ENGINE=MEMORY
+                        """
+                    )
+                )
+                self.mysql_session.execute(text("TRUNCATE TABLE tmp_contract_state_sync"))
+
+                params = [{"contract_id": int(contract_id)} for contract_id in contract_ids]
+                batch_size = 5000
+                for i in range(0, len(params), batch_size):
+                    self.mysql_session.execute(
+                        text(
+                            """
+                            INSERT INTO tmp_contract_state_sync (contract_id)
+                            VALUES (:contract_id)
+                            """
+                        ),
+                        params[i : i + batch_size],
+                    )
+
+                result = self.mysql_session.execute(
+                    text(
+                        """
+                        SELECT
+                            c.id AS contract_id,
+                            COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
+                        FROM contract c
+                        LEFT JOIN contracts_status cs
+                            ON cs.id = c.contracts_status_id
+                        INNER JOIN tmp_contract_state_sync t
+                            ON t.contract_id = c.id
+                        """
+                    )
+                )
+                for row in result:
+                    contract_id = int(row[0])
+                    raw_state = row[1]
+                    state_map[contract_id] = (
+                        str(raw_state).strip()
+                        if raw_state is not None and str(raw_state).strip()
+                        else "SIN_ESTADO"
+                    )
+            except Exception as temp_error:
+                # Fallback sin privilegios DDL: consulta IN por bloques grandes.
+                logger.info(
+                    "Sin privilegios para tabla temporal o fallo DDL (%s). "
+                    "Usando fallback IN por bloques.",
+                    temp_error,
+                )
+                batch_size = 50000
+                for i in range(0, len(contract_ids), batch_size):
+                    batch = contract_ids[i : i + batch_size]
+                    if not batch:
+                        continue
+                    batch_ids = ",".join(str(int(contract_id)) for contract_id in batch)
+
+                    query = f"""
+                    SELECT
+                        c.id AS contract_id,
+                        COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
+                    FROM contract c
+                    LEFT JOIN contracts_status cs
+                        ON cs.id = c.contracts_status_id
+                    WHERE c.id IN ({batch_ids})
+                    """
+
+                    result = self.mysql_session.execute(text(query))
+                    for row in result:
+                        contract_id = int(row[0])
+                        raw_state = row[1]
+                        state_map[contract_id] = (
+                            str(raw_state).strip()
+                            if raw_state is not None and str(raw_state).strip()
+                            else "SIN_ESTADO"
+                        )
+
+            logger.info(
+                "Estado actual obtenido para %s contratos",
+                len(state_map),
+            )
+            return state_map
+
+        except Exception as e:
+            logger.error(
+                "Error al consultar estado actual por contrato: %s",
+                e,
+            )
+            raise

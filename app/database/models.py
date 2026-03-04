@@ -20,6 +20,7 @@ class ContractAdvisor(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     contract_id = Column(Integer, nullable=False, index=True)
     user_id = Column(Integer, nullable=False, index=True)
+    estado_actual = Column(String(100), nullable=True, index=True)
     
     def __repr__(self):
         return f"<ContractAdvisor(contract_id={self.contract_id}, user_id={self.user_id})>"
@@ -76,6 +77,7 @@ class ContractAdvisorHistory(Base):
     dpd_terminal = Column("dpd_final", String(20), nullable=True)
     dias_atraso_inicial = Column("dias_atraso_incial", Integer, nullable=True)
     dias_atraso_terminal = Column(Integer, nullable=True)
+    estado_actual = Column("estado_actual", String(100), nullable=True)
     
     def __repr__(self):
         return f"<ContractAdvisorHistory(contract_id={self.contract_id}, user_id={self.user_id})>"

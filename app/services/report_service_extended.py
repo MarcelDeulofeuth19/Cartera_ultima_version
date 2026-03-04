@@ -3,12 +3,13 @@ Servicio extendido para generaciÃ³n de reportes detallados de asignaciÃ³n
 """
 import psycopg2
 import pandas as pd
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional
 import logging
 from app.core.config import settings
-from app.core.dpd import get_dpd_range
+from app.core.dpd import ASSIGNMENT_DPD_ORDER, get_assignment_dpd_range, get_dpd_range
 from app.data.manual_fixed_contracts import MANUAL_FIXED_CONTRACTS
 
 logger = logging.getLogger(__name__)
@@ -377,8 +378,14 @@ ORDER BY c.id ASC;
             # Forzar dias/rango del reporte con la misma logica operativa de asignacion (MySQL).
             if days_overdue_map is None:
                 days_overdue_map = self._load_operational_days_overdue(contracts)
+            overdue_installments_map = self._load_operational_overdue_installments(contracts)
 
-            self._apply_operational_days_and_ranges(df, cols_by_lower, days_overdue_map)
+            self._apply_operational_days_and_ranges(
+                df,
+                cols_by_lower,
+                days_overdue_map,
+                overdue_installments_map,
+            )
 
             # Eliminar campos innecesarios
             for col in ['cantidad_cuotas_pagados', 'Marca']:
@@ -461,11 +468,36 @@ ORDER BY c.id ASC;
             )
             return {}
 
+    def _load_operational_overdue_installments(self, contracts: List[int]) -> Dict[int, int]:
+        """
+        Obtiene cantidad de cuotas atrasadas con la misma logica operativa
+        usada en el proceso de asignacion.
+        """
+        if not contracts:
+            return {}
+
+        try:
+            from app.database.connections import db_manager
+            from app.services.contract_service import ContractService
+
+            with db_manager.get_mysql_session() as mysql_session:
+                contract_service = ContractService(mysql_session)
+                return contract_service.get_overdue_installments_count_for_contracts(
+                    [int(contract_id) for contract_id in contracts]
+                )
+        except Exception as error:
+            logger.warning(
+                "No se pudo cargar cuotas atrasadas operativas para reporte: %s",
+                error,
+            )
+            return {}
+
     def _apply_operational_days_and_ranges(
         self,
         df: pd.DataFrame,
         cols_by_lower: Dict[str, str],
         days_overdue_map: Optional[Dict[int, int]],
+        overdue_installments_map: Optional[Dict[int, int]] = None,
     ) -> None:
         """
         Reemplaza en el DataFrame de reporte los campos de dias/rango por la
@@ -483,6 +515,10 @@ ORDER BY c.id ASC;
             return
 
         days_col = cols_by_lower.get("dias_iniciales_mes")
+        overdue_installments_col = (
+            cols_by_lower.get("cuotas atrasadas")
+            or cols_by_lower.get("cuotas_atrasadas")
+        )
         range_col = (
             cols_by_lower.get("rango")
             or cols_by_lower.get("rango dias")
@@ -506,8 +542,28 @@ ORDER BY c.id ASC;
 
         if range_col:
             df[range_col] = contract_days.apply(
-                lambda days: get_dpd_range(int(days)) or "0"
+                lambda days: (
+                    get_assignment_dpd_range(int(days))
+                    or get_dpd_range(int(days))
+                    or "0"
+                )
             )
+
+        if overdue_installments_map is not None:
+            def _resolve_overdue_installments(contract_value) -> int:
+                contract_id = self._safe_int(contract_value)
+                if contract_id is None:
+                    return 0
+                return int(overdue_installments_map.get(contract_id, 0))
+
+            if overdue_installments_col:
+                df[overdue_installments_col] = df[contract_col].apply(
+                    _resolve_overdue_installments
+                )
+            else:
+                df["Cuotas Atrasadas"] = df[contract_col].apply(
+                    _resolve_overdue_installments
+                )
     
     def calculate_distribution_metrics(self) -> Dict:
         """
@@ -531,7 +587,8 @@ ORDER BY c.id ASC;
                     'cobyser_percent': 0,
                     'cumple_60_40': False,
                     'diferencia_60': 0,
-                    'diferencia_40': 0
+                    'diferencia_40': 0,
+                    'bucket_distribution': [],
                 }
             
             serlefin_percent = (len(contracts_81) / total) * 100
@@ -542,6 +599,10 @@ ORDER BY c.id ASC;
             
             manual_fixed_81 = len(MANUAL_FIXED_CONTRACTS.get(81, []))
             manual_fixed_45 = len(MANUAL_FIXED_CONTRACTS.get(45, []))
+            bucket_distribution = self._calculate_bucket_distribution(
+                contracts_81=contracts_81,
+                contracts_45=contracts_45,
+            )
             
             return {
                 'total': total,
@@ -553,7 +614,8 @@ ORDER BY c.id ASC;
                 'diferencia_60': round(serlefin_percent - 60, 2),
                 'diferencia_40': round(cobyser_percent - 40, 2),
                 'manual_fixed_81': manual_fixed_81,
-                'manual_fixed_45': manual_fixed_45
+                'manual_fixed_45': manual_fixed_45,
+                'bucket_distribution': bucket_distribution,
             }
             
         except Exception as e:
@@ -636,7 +698,113 @@ ORDER BY c.id ASC;
             </p>
             """
 
+            bucket_rows = metrics.get("bucket_distribution", []) or []
+            if bucket_rows:
+                bucket_rows_html = ""
+                for row in bucket_rows:
+                    bucket_rows_html += f"""
+                    <tr>
+                        <td style=\"border: 1px solid #ddd; padding: 8px;\"><strong>{row.get('bucket', '')}</strong></td>
+                        <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('total', 0) or 0)}</td>
+                        <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('serlefin_assigned', 0) or 0)}</td>
+                        <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('cobyser_assigned', 0) or 0)}</td>
+                        <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('serlefin_target', 0) or 0)}</td>
+                        <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('cobyser_target', 0) or 0)}</td>
+                    </tr>
+                    """
+
+                html += f"""
+                <h3 style=\"margin-top: 20px;\">Distribucion por Bucket (objetivo 60/40)</h3>
+                <table style=\"width:100%; border-collapse: collapse;\">
+                    <tr style=\"background-color: #f0f0f0;\">
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Bucket DPD</th>
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Total Bucket</th>
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Asignados Serlefin</th>
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Asignados Cobyser</th>
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Destino Serlefin (60%)</th>
+                        <th style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">Destino Cobyser (40%)</th>
+                    </tr>
+                    {bucket_rows_html}
+                </table>
+                """
+
         return html
+
+    @staticmethod
+    def _compute_bucket_targets(total: int, serlefin_ratio: float = 0.6) -> Tuple[int, int]:
+        total_int = max(0, int(total))
+        ratio = max(0.0, min(1.0, float(serlefin_ratio)))
+        exact_81 = total_int * ratio
+        exact_45 = total_int * (1.0 - ratio)
+        target_81 = int(math.floor(exact_81))
+        target_45 = int(math.floor(exact_45))
+        remainder = total_int - (target_81 + target_45)
+        if remainder > 0:
+            frac_81 = exact_81 - target_81
+            frac_45 = exact_45 - target_45
+            if frac_81 >= frac_45:
+                target_81 += remainder
+            else:
+                target_45 += remainder
+        return target_81, target_45
+
+    def _calculate_bucket_distribution(
+        self,
+        contracts_81: List[int],
+        contracts_45: List[int],
+    ) -> List[Dict[str, int]]:
+        contract_ids = sorted(
+            {int(contract_id) for contract_id in (contracts_81 + contracts_45)}
+        )
+        if not contract_ids:
+            return []
+
+        days_map = self._load_operational_days_overdue(contract_ids)
+        if not days_map:
+            return []
+
+        bucket_totals: Dict[str, Dict[str, int]] = {
+            bucket: {
+                "total": 0,
+                "serlefin_assigned": 0,
+                "cobyser_assigned": 0,
+            }
+            for bucket in ASSIGNMENT_DPD_ORDER
+        }
+
+        for contract_id in contracts_81:
+            days = int(days_map.get(int(contract_id), 0))
+            bucket = get_assignment_dpd_range(days)
+            if bucket in bucket_totals:
+                bucket_totals[bucket]["total"] += 1
+                bucket_totals[bucket]["serlefin_assigned"] += 1
+
+        for contract_id in contracts_45:
+            days = int(days_map.get(int(contract_id), 0))
+            bucket = get_assignment_dpd_range(days)
+            if bucket in bucket_totals:
+                bucket_totals[bucket]["total"] += 1
+                bucket_totals[bucket]["cobyser_assigned"] += 1
+
+        rows: List[Dict[str, int]] = []
+        for bucket in ASSIGNMENT_DPD_ORDER:
+            total_bucket = int(bucket_totals[bucket]["total"])
+            if total_bucket <= 0:
+                continue
+
+            target_81, target_45 = self._compute_bucket_targets(total_bucket, 0.6)
+            rows.append(
+                {
+                    "bucket": bucket,
+                    "total": total_bucket,
+                    "serlefin_target": target_81,
+                    "cobyser_target": target_45,
+                    "serlefin_assigned": int(bucket_totals[bucket]["serlefin_assigned"]),
+                    "cobyser_assigned": int(bucket_totals[bucket]["cobyser_assigned"]),
+                }
+            )
+
+        return rows
 
 # Instancia global
 report_service_extended = ReportServiceExtended()
