@@ -49,6 +49,7 @@ class HistoryService:
             metadata.get("dias_atraso_inicial", metadata.get("days_overdue"))
         )
         dpd_inicial = metadata.get("dpd_inicial") or get_dpd_range(dias_atraso_inicial)
+        dpd_actual = metadata.get("dpd_actual") or dpd_inicial
         tipo = metadata.get("tipo") or default_tipo
         estado_actual = str(metadata.get("estado_actual") or "SIN_ESTADO").strip()
         if not estado_actual:
@@ -57,6 +58,7 @@ class HistoryService:
         return {
             "tipo": tipo,
             "dpd_inicial": dpd_inicial,
+            "dpd_actual": dpd_actual,
             "dias_atraso_inicial": dias_atraso_inicial,
             "estado_actual": estado_actual,
         }
@@ -77,10 +79,12 @@ class HistoryService:
 
         dias_atraso_inicial = self._to_int_or_none(metadata.get("dias_atraso_inicial"))
         dpd_inicial = metadata.get("dpd_inicial") or get_dpd_range(dias_atraso_inicial)
+        dpd_actual = metadata.get("dpd_actual") or dpd_terminal or dpd_inicial
 
         return {
             "tipo": tipo,
             "dpd_terminal": dpd_terminal,
+            "dpd_actual": dpd_actual,
             "dias_atraso_terminal": dias_atraso_terminal,
             "dpd_inicial": dpd_inicial,
             "dias_atraso_inicial": dias_atraso_inicial,
@@ -153,6 +157,7 @@ class HistoryService:
                         "tipo": initial_fields["tipo"],
                         "dpd_inicial": initial_fields["dpd_inicial"],
                         "dpd_terminal": None,
+                        "dpd_actual": initial_fields["dpd_actual"],
                         "dias_atraso_inicial": initial_fields["dias_atraso_inicial"],
                         "dias_atraso_terminal": None,
                         "estado_actual": initial_fields["estado_actual"],
@@ -257,6 +262,7 @@ class HistoryService:
                     record.dias_atraso_terminal = terminal_fields[
                         "dias_atraso_terminal"
                     ]
+                    record.dpd_actual = terminal_fields["dpd_actual"]
                     record.estado_actual = terminal_fields["estado_actual"]
 
                     if record.dpd_inicial is None and terminal_fields["dpd_inicial"]:
@@ -288,6 +294,7 @@ class HistoryService:
                         tipo=terminal_fields["tipo"],
                         dpd_inicial=dpd_inicial,
                         dpd_terminal=terminal_fields["dpd_terminal"],
+                        dpd_actual=terminal_fields["dpd_actual"],
                         dias_atraso_inicial=dias_inicial,
                         dias_atraso_terminal=terminal_fields["dias_atraso_terminal"],
                         estado_actual=terminal_fields["estado_actual"],

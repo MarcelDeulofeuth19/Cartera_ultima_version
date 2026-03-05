@@ -78,6 +78,7 @@ class ContractAdvisorHistory(Base):
     dias_atraso_inicial = Column("dias_atraso_incial", Integer, nullable=True)
     dias_atraso_terminal = Column(Integer, nullable=True)
     estado_actual = Column("estado_actual", String(100), nullable=True)
+    dpd_actual = Column("dpd_actual", String(20), nullable=True)
     
     def __repr__(self):
         return f"<ContractAdvisorHistory(contract_id={self.contract_id}, user_id={self.user_id})>"

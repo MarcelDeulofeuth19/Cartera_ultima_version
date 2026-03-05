@@ -46,6 +46,7 @@ class AssignmentService:
         self.manual_fixed_service = ManualFixedService(postgres_session)
         self.runtime_config_service = RuntimeConfigService()
         self._estado_actual_column_ready = False
+        self._history_dpd_actual_column_ready = False
         
         # Variables de control para balanceo
         self._last_assigned_user = settings.USER_IDS[1]  # Empieza con 81
@@ -114,6 +115,53 @@ class AssignmentService:
             )
             return False
 
+    def _ensure_history_dpd_actual_column(self) -> bool:
+        """
+        Garantiza que contract_advisors_history tenga la columna dpd_actual.
+        """
+        if self._history_dpd_actual_column_ready:
+            return True
+
+        try:
+            exists_row = self.postgres_session.execute(
+                text(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM information_schema.columns
+                    WHERE table_schema = 'alocreditindicators'
+                      AND table_name = 'contract_advisors_history'
+                      AND column_name = 'dpd_actual'
+                    """
+                )
+            ).mappings().first()
+            column_exists = int(exists_row["cnt"] or 0) > 0
+            if column_exists:
+                self._history_dpd_actual_column_ready = True
+                return True
+
+            self.postgres_session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            self.postgres_session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            self.postgres_session.execute(
+                text(
+                    """
+                    ALTER TABLE alocreditindicators.contract_advisors_history
+                    ADD COLUMN IF NOT EXISTS dpd_actual VARCHAR(20)
+                    """
+                )
+            )
+            self.postgres_session.commit()
+            self._history_dpd_actual_column_ready = True
+            logger.info("Columna contract_advisors_history.dpd_actual lista")
+            return True
+        except Exception as error:
+            self.postgres_session.rollback()
+            logger.warning(
+                "No se pudo asegurar columna dpd_actual en historial. "
+                "Se continuara sin sincronizar dpd_actual en esta corrida: %s",
+                error,
+            )
+            return False
+
     def refresh_estado_actual_for_assignments(
         self,
         current_assignments: Dict[int, Set[int]],
@@ -127,6 +175,8 @@ class AssignmentService:
             "rows_updated": 0,
             "history_rows_updated": 0,
             "lookup_failed": 0,
+            "dpd_loaded": 0,
+            "dpd_lookup_failed": 0,
             "sync_failed": 0,
         }
 
@@ -142,10 +192,13 @@ class AssignmentService:
 
         if not self._ensure_estado_actual_column():
             return stats
+        sync_history_dpd = self._ensure_history_dpd_actual_column()
+
+        sorted_contract_ids = sorted(all_assigned_contracts)
 
         try:
             state_map = self._require_contract_service().get_current_state_for_contracts(
-                sorted(all_assigned_contracts)
+                sorted_contract_ids
             )
         except Exception as estado_error:
             stats["lookup_failed"] = len(all_assigned_contracts)
@@ -155,15 +208,36 @@ class AssignmentService:
             )
             return stats
         stats["states_loaded"] = len(state_map)
-        if not state_map:
-            return stats
+
+        dpd_map: Dict[int, Optional[str]] = {}
+        try:
+            days_map = self._require_contract_service().get_days_overdue_for_contracts(
+                sorted_contract_ids
+            )
+            for contract_id in sorted_contract_ids:
+                days = days_map.get(contract_id)
+                dpd_map[contract_id] = get_dpd_range(
+                    int(days) if days is not None else None
+                )
+        except Exception as dpd_error:
+            stats["dpd_lookup_failed"] = len(sorted_contract_ids)
+            logger.warning(
+                "No se pudo sincronizar dpd_actual en esta corrida: %s",
+                dpd_error,
+            )
+        stats["dpd_loaded"] = sum(1 for value in dpd_map.values() if value)
 
         params = [
             {
                 "contract_id": int(contract_id),
-                "estado_actual": str(state or "SIN_ESTADO"),
+                "estado_actual": str(
+                    state_map.get(int(contract_id), "SIN_ESTADO") or "SIN_ESTADO"
+                ),
+                "dpd_actual": str(dpd_map.get(int(contract_id)))
+                if dpd_map.get(int(contract_id))
+                else None,
             }
-            for contract_id, state in state_map.items()
+            for contract_id in sorted_contract_ids
         ]
 
         try:
@@ -177,7 +251,8 @@ class AssignmentService:
                     """
                     CREATE TEMP TABLE IF NOT EXISTS tmp_estado_actual_sync (
                         contract_id INTEGER PRIMARY KEY,
-                        estado_actual VARCHAR(100)
+                        estado_actual VARCHAR(100),
+                        dpd_actual VARCHAR(20)
                     ) ON COMMIT DROP
                     """
                 )
@@ -190,10 +265,12 @@ class AssignmentService:
                 self.postgres_session.execute(
                     text(
                         """
-                        INSERT INTO tmp_estado_actual_sync (contract_id, estado_actual)
-                        VALUES (:contract_id, :estado_actual)
+                        INSERT INTO tmp_estado_actual_sync (contract_id, estado_actual, dpd_actual)
+                        VALUES (:contract_id, :estado_actual, :dpd_actual)
                         ON CONFLICT (contract_id)
-                        DO UPDATE SET estado_actual = EXCLUDED.estado_actual
+                        DO UPDATE SET
+                            estado_actual = EXCLUDED.estado_actual,
+                            dpd_actual = EXCLUDED.dpd_actual
                         """
                     ),
                     chunk,
@@ -211,31 +288,54 @@ class AssignmentService:
                     """
                 )
             )
-            history_result = self.postgres_session.execute(
-                text(
-                    """
-                    UPDATE alocreditindicators.contract_advisors_history h
-                    SET estado_actual = t.estado_actual
-                    FROM tmp_estado_actual_sync t
-                    WHERE h.contract_id = t.contract_id
-                      AND h."Fecha Terminal" IS NULL
-                      AND h.estado_actual IS DISTINCT FROM t.estado_actual
-                    """
+            if sync_history_dpd:
+                history_result = self.postgres_session.execute(
+                    text(
+                        """
+                        UPDATE alocreditindicators.contract_advisors_history h
+                        SET
+                            estado_actual = t.estado_actual,
+                            dpd_actual = COALESCE(t.dpd_actual, h.dpd_actual)
+                        FROM tmp_estado_actual_sync t
+                        WHERE h.contract_id = t.contract_id
+                          AND h."Fecha Terminal" IS NULL
+                          AND (
+                              h.estado_actual IS DISTINCT FROM t.estado_actual
+                              OR (
+                                  t.dpd_actual IS NOT NULL
+                                  AND h.dpd_actual IS DISTINCT FROM t.dpd_actual
+                              )
+                          )
+                        """
+                    )
                 )
-            )
+            else:
+                history_result = self.postgres_session.execute(
+                    text(
+                        """
+                        UPDATE alocreditindicators.contract_advisors_history h
+                        SET estado_actual = t.estado_actual
+                        FROM tmp_estado_actual_sync t
+                        WHERE h.contract_id = t.contract_id
+                          AND h."Fecha Terminal" IS NULL
+                          AND h.estado_actual IS DISTINCT FROM t.estado_actual
+                        """
+                    )
+                )
             self.postgres_session.commit()
             stats["rows_updated"] = int(result.rowcount or 0)
             stats["history_rows_updated"] = int(history_result.rowcount or 0)
             logger.info(
-                "estado_actual actualizado: contratos=%s, contract_advisors=%s, history=%s",
+                "estado_actual/dpd_actual actualizado: contratos=%s, contract_advisors=%s, history=%s, dpd_cargados=%s",
                 stats["contracts_considered"],
                 stats["rows_updated"],
                 stats["history_rows_updated"],
+                stats["dpd_loaded"],
             )
             return stats
         except Exception as error:
             self.postgres_session.rollback()
-            logger.error("Error actualizando estado_actual: %s", error)
+            logger.error("Error actualizando estado_actual/dpd_actual: %s", error)
             stats["sync_failed"] = len(params)
             return stats
 
@@ -405,6 +505,7 @@ class AssignmentService:
                 "tipo": tipo,
                 "dias_atraso_inicial": days_int,
                 "dpd_inicial": get_dpd_range(days_int),
+                "dpd_actual": get_dpd_range(days_int),
                 "estado_actual": str(states_map.get(int(contract_id), "SIN_ESTADO")),
             }
         return metadata
@@ -1620,7 +1721,6 @@ class AssignmentService:
             "deleted_from_contract_advisors": 0,
             "disabled": 1,
         }
-
 
 
 

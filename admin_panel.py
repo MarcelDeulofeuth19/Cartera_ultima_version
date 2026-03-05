@@ -667,6 +667,7 @@ def _load_assignment_history_report(
                 h.tipo,
                 h.dpd_inicial,
                 h.dpd_final,
+                h.dpd_actual,
                 h.dias_atraso_incial,
                 h.dias_atraso_terminal,
                 COALESCE(NULLIF(TRIM(h.estado_actual::text), ''), 'SIN_ESTADO') AS estado_actual,
@@ -1250,6 +1251,7 @@ def _render_assignment_history_report_html(
             tipo,
             dpd_inicial,
             dpd_final,
+            dpd_actual,
             dias_inicial,
             dias_terminal,
             estado_actual,
@@ -1277,6 +1279,7 @@ def _render_assignment_history_report_html(
             f"<td>{html.escape(tipo_text)}{tipo_badge}</td>"
             f"<td>{html.escape(str(dpd_inicial or '-'))}</td>"
             f"<td>{html.escape(str(dpd_final or '-'))}</td>"
+            f"<td>{html.escape(str(dpd_actual or '-'))}</td>"
             f"<td>{html.escape(str(dias_inicial if dias_inicial is not None else '-'))}</td>"
             f"<td>{html.escape(str(dias_terminal if dias_terminal is not None else '-'))}</td>"
             f"<td>{html.escape(estado_actual_text)}</td>"
@@ -1287,14 +1290,14 @@ def _render_assignment_history_report_html(
     if not table_rows:
         if int(report.get("total_rows", 0) or 0) > 0:
             table_rows = (
-                "<tr><td colspan='12'>No hay filas en esta pagina. Usa el paginador.</td></tr>"
+                "<tr><td colspan='13'>No hay filas en esta pagina. Usa el paginador.</td></tr>"
             )
         elif report.get("start_date") or report.get("end_date"):
             table_rows = (
-                "<tr><td colspan='12'>Sin registros para filtros aplicados.</td></tr>"
+                "<tr><td colspan='13'>Sin registros para filtros aplicados.</td></tr>"
             )
         else:
-            table_rows = "<tr><td colspan='12'>Sin registros.</td></tr>"
+            table_rows = "<tr><td colspan='13'>Sin registros.</td></tr>"
 
     back_path = f"/{panel_hash}"
     reset_filters_path = (
@@ -1512,6 +1515,7 @@ def _render_assignment_history_report_html(
             <th>Tipo</th>
             <th>DPD Inicial</th>
             <th>DPD Final</th>
+            <th>DPD Actual</th>
             <th>Días Inicial</th>
             <th>Días Terminal</th>
             <th>Estado Actual</th>
