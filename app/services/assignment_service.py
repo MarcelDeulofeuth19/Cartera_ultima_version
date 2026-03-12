@@ -7,6 +7,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Set, Any, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy.orm import Session
 from sqlalchemy import bindparam, text
 from app.core.config import settings
@@ -1188,6 +1189,9 @@ class AssignmentService:
         logger.info("=" * 80)
 
         process_start = datetime.now()
+        notifications_allowed_today, notification_local_day = (
+            self._notifications_allowed_today()
+        )
         results = {
             "success": False,
             "blacklist_contracts_count": 0,
@@ -1202,6 +1206,12 @@ class AssignmentService:
             "runtime_config": {},
             "error": None,
             "started_at": process_start.isoformat(),
+            "notification_policy": {
+                "timezone": settings.AUTO_ASSIGNMENT_TIMEZONE,
+                "weekdays": settings.auto_notification_weekdays,
+                "local_day": notification_local_day,
+                "enabled_today": notifications_allowed_today,
+            },
         }
 
         try:
@@ -1310,14 +1320,24 @@ class AssignmentService:
             logger.info("PROCESO DE ASIGNACION COMPLETADO")
             logger.info("=" * 80)
 
-            try:
-                logger.info("Generando y enviando informes por correo...")
-                report_result = self.generate_and_send_reports()
-                results["report_sent"] = report_result
-            except Exception as report_error:
-                logger.error(f"Error generando/enviando informes: {report_error}")
+            if notifications_allowed_today:
+                try:
+                    logger.info("Generando y enviando informes por correo...")
+                    report_result = self.generate_and_send_reports()
+                    results["report_sent"] = report_result
+                except Exception as report_error:
+                    logger.error(f"Error generando/enviando informes: {report_error}")
+                    results["report_sent"] = False
+                    results["report_error"] = str(report_error)
+            else:
+                logger.info(
+                    "Envio de informes omitido por calendario de notificaciones. "
+                    "Hoy=%s dias_permitidos=%s",
+                    notification_local_day,
+                    settings.auto_notification_weekdays,
+                )
                 results["report_sent"] = False
-                results["report_error"] = str(report_error)
+                results["report_skipped_by_schedule"] = True
 
         except Exception as e:
             logger.error(f"Error en el proceso de asignacion: {e}")
@@ -1331,22 +1351,60 @@ class AssignmentService:
                 3,
             )
 
-            try:
-                completion_sent = self.send_completion_notification(results)
-                results["completion_notification_sent"] = completion_sent
-            except Exception as notify_error:
-                logger.error(
-                    "Error enviando notificacion de finalizacion: %s",
-                    notify_error,
+            if notifications_allowed_today:
+                try:
+                    completion_sent = self.send_completion_notification(results)
+                    results["completion_notification_sent"] = completion_sent
+                except Exception as notify_error:
+                    logger.error(
+                        "Error enviando notificacion de finalizacion: %s",
+                        notify_error,
+                    )
+                    results["completion_notification_sent"] = False
+                    results["completion_notification_error"] = str(notify_error)
+            else:
+                logger.info(
+                    "Notificacion de finalizacion omitida por calendario. "
+                    "Hoy=%s dias_permitidos=%s",
+                    notification_local_day,
+                    settings.auto_notification_weekdays,
                 )
                 results["completion_notification_sent"] = False
-                results["completion_notification_error"] = str(notify_error)
+                results["completion_notification_skipped_by_schedule"] = True
 
         return results
 
+    def _notifications_allowed_today(self) -> Tuple[bool, str]:
+        """
+        Define si hoy se deben enviar correos, usando zona horaria operativa.
+        """
+        try:
+            timezone = ZoneInfo(settings.AUTO_ASSIGNMENT_TIMEZONE)
+        except ZoneInfoNotFoundError:
+            logger.warning(
+                "Zona horaria invalida '%s' para notificaciones. Usando UTC.",
+                settings.AUTO_ASSIGNMENT_TIMEZONE,
+            )
+            timezone = ZoneInfo("UTC")
+
+        local_now = datetime.now(timezone)
+        weekday = local_now.weekday()
+        allowed_weekdays = settings.auto_notification_weekdays
+        allowed_today = weekday in allowed_weekdays
+
+        logger.info(
+            "Politica de notificacion: hoy=%s (weekday=%s), dias_permitidos=%s, enviar=%s",
+            local_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            weekday,
+            allowed_weekdays,
+            "SI" if allowed_today else "NO",
+        )
+
+        return allowed_today, local_now.strftime("%Y-%m-%d")
+
     def send_completion_notification(self, results: Dict[str, Any]) -> bool:
         """
-        Notifica siempre por correo el resultado final del proceso de asignacion.
+        Notifica por correo el resultado final del proceso de asignacion.
         """
         from app.services.email_service import email_service
 
@@ -1721,6 +1779,4 @@ class AssignmentService:
             "deleted_from_contract_advisors": 0,
             "disabled": 1,
         }
-
-
 

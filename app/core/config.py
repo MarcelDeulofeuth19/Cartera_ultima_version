@@ -87,21 +87,31 @@ class Settings(BaseSettings):
     LOCK_FILE: str = "assignment_process.lock"
     LOCK_TIMEOUT: int = 300  # 5 minutos de timeout
 
-    # Scheduler automatico de asignacion (martes y jueves 7:00 AM)
+    # Scheduler automatico de asignacion (diario 7:00 AM)
     AUTO_ASSIGNMENT_ENABLED: bool = True
     AUTO_ASSIGNMENT_HOUR: int = 7
     AUTO_ASSIGNMENT_MINUTE: int = 0
     AUTO_ASSIGNMENT_TIMEZONE: str = "America/Bogota"
     # Python weekday: lunes=0 ... domingo=6
-    AUTO_ASSIGNMENT_WEEKDAYS: str = "1,3"
+    AUTO_ASSIGNMENT_WEEKDAYS: str = "0,1,2,3,4,5,6"
+    # Dias para envio de notificaciones por correo
+    # Python weekday: lunes=0 ... domingo=6
+    AUTO_NOTIFICATION_WEEKDAYS: str = "1,3"
 
     # Correos de notificacion (separados por coma)
     # - NOTIFICATION_RECIPIENTS: recibe notificacion con ambas bases
     # - COBYSER_NOTIFICATION_RECIPIENTS: recibe notificacion + base de Cobyser
     # - SERLEFIN_NOTIFICATION_RECIPIENTS: recibe solo notificacion (sin Excel)
-    NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co,kcamargo@alocredit.co"
-    COBYSER_NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co"
-    SERLEFIN_NOTIFICATION_RECIPIENTS: str = "mdeulofeuth@alocredit.co"
+    NOTIFICATION_RECIPIENTS: str = (
+        "mdeulofeuth@alocredit.co,kcamargo@alocredit.co,"
+        "fcamacho@alocredit.co,jcarrasco@alocredit.co"
+    )
+    COBYSER_NOTIFICATION_RECIPIENTS: str = (
+        "mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co"
+    )
+    SERLEFIN_NOTIFICATION_RECIPIENTS: str = (
+        "mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co"
+    )
 
     # Lista negra de contratos (TXT)
     BLACKLIST_ENABLED: bool = False
@@ -203,13 +213,11 @@ class Settings(BaseSettings):
         """
         return self._parse_recipients(self.SERLEFIN_NOTIFICATION_RECIPIENTS)
 
-    @property
-    def auto_assignment_weekdays(self) -> List[int]:
-        """
-        Dias de ejecucion del scheduler en formato weekday de Python.
-        """
+    @staticmethod
+    def _parse_weekdays(raw_value: str, fallback: List[int]) -> List[int]:
+        """Convierte CSV de weekdays (0-6) a lista unica y ordenada por aparicion."""
         weekdays = []
-        for raw_day in self.AUTO_ASSIGNMENT_WEEKDAYS.split(","):
+        for raw_day in str(raw_value or "").split(","):
             raw_day = raw_day.strip()
             if not raw_day:
                 continue
@@ -222,7 +230,27 @@ class Settings(BaseSettings):
 
         if weekdays:
             return weekdays
-        return [1, 3]
+        return list(fallback)
+
+    @property
+    def auto_assignment_weekdays(self) -> List[int]:
+        """
+        Dias de ejecucion del scheduler en formato weekday de Python.
+        """
+        return self._parse_weekdays(
+            self.AUTO_ASSIGNMENT_WEEKDAYS,
+            [0, 1, 2, 3, 4, 5, 6],
+        )
+
+    @property
+    def auto_notification_weekdays(self) -> List[int]:
+        """
+        Dias de envio de notificaciones en formato weekday de Python.
+        """
+        return self._parse_weekdays(
+            self.AUTO_NOTIFICATION_WEEKDAYS,
+            [1, 3],
+        )
 
     @property
     def serlefin_attachment_exception_recipients(self) -> List[str]:
@@ -239,4 +267,3 @@ class Settings(BaseSettings):
 
 # Instancia global de configuraciÃ³n (Singleton)
 settings = Settings()
-
