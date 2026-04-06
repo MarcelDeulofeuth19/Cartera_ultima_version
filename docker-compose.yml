@@ -60,6 +60,8 @@
       - DAYS_THRESHOLD=61
       - MAX_DAYS_THRESHOLD=240
       - BLACKLIST_ENABLED=False
+      - CLIENT_DOCUMENT_BLACKLIST=500102
+      - CLIENT_DOCUMENT_BLACKLIST_FILE=app/data/client_document_blacklist.txt
       - EFFECT_ACUERDO_PAGO=acuerdo_de_pago
       - EFFECT_PAGO_TOTAL=pago_total
       - PAGO_TOTAL_VALIDITY_DAYS=30
@@ -70,7 +72,7 @@
       - AUTO_ASSIGNMENT_TIMEZONE=America/Bogota
       - AUTO_ASSIGNMENT_WEEKDAYS=0,1,2,3,4,5,6
       - AUTO_NOTIFICATION_WEEKDAYS=1,3
-      - NOTIFICATION_RECIPIENTS=mdeulofeuth@alocredit.co,kcamargo@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co
+      - NOTIFICATION_RECIPIENTS=mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co
       - COBYSER_NOTIFICATION_RECIPIENTS=hcaballero@cobyser01.com,jcmartinez@cobyser01.com,fcamacho@alocredit.co,jcarrasco@alocredit.co,mdeulofeuth@alocredit.co
       - SERLEFIN_NOTIFICATION_RECIPIENTS=mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co
 
@@ -91,6 +93,7 @@
       - ./reports:/app/reports
       - ./logs:/app/logs
       - ./app/data/contract_blacklist.txt:/app/app/data/contract_blacklist.txt
+      - ./app/data/client_document_blacklist.txt:/app/app/data/client_document_blacklist.txt
 
     depends_on:
       internal-config-db:
@@ -99,11 +102,11 @@
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 60s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
     networks:
       - app-network
@@ -112,10 +115,10 @@
       resources:
         limits:
           cpus: '1.0'
-          memory: 1G
+          memory: 256M
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '0.25'
+          memory: 128M
 
   # ==============================================
   # Panel visual protegido por hash
@@ -141,6 +144,7 @@
       - DEFAULT_ASSIGNMENT_MAX_DAYS=240
     volumes:
       - ./app/data/contract_blacklist.txt:/app/app/data/contract_blacklist.txt
+      - ./app/data/client_document_blacklist.txt:/app/app/data/client_document_blacklist.txt
 
     depends_on:
       internal-config-db:
@@ -150,10 +154,19 @@
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9007/_health"]
-      interval: 30s
-      timeout: 10s
+      interval: 60s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 
     networks:
       - app-network
@@ -164,4 +177,3 @@
 networks:
   app-network:
     driver: bridge
-

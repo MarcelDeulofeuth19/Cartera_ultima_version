@@ -5,7 +5,7 @@ Obtiene contratos con atraso desde alocreditprod.
 import logging
 from typing import List, Dict, Set, Optional
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -18,6 +18,109 @@ class ContractService:
 
     def __init__(self, mysql_session: Session):
         self.mysql_session = mysql_session
+
+    @staticmethod
+    def normalize_customer_document(raw_document: str) -> str:
+        """Normaliza cedula/documento a solo digitos."""
+        return "".join(ch for ch in str(raw_document or "") if ch.isdigit()).strip()
+
+    def get_contract_ids_by_customer_documents(
+        self,
+        customer_documents: Set[str],
+    ) -> Set[int]:
+        """
+        Obtiene IDs de contratos asociados a una lista de cedulas/documentos.
+        """
+        normalized_docs = {
+            self.normalize_customer_document(document)
+            for document in (customer_documents or set())
+        }
+        normalized_docs = {doc for doc in normalized_docs if doc}
+        if not normalized_docs:
+            return set()
+        normalized_docs_no_zero = {
+            (doc.lstrip("0") or "0")
+            for doc in normalized_docs
+        }
+
+        logger.info(
+            "Resolviendo contratos para %s documento(s) bloqueado(s)...",
+            len(normalized_docs),
+        )
+
+        statement = text(
+            """
+            SELECT DISTINCT
+                c.id AS contract_id
+            FROM contract c
+            INNER JOIN application a
+                ON a.id = c.application_id
+            INNER JOIN customer c2
+                ON c2.id = a.customer_id
+            WHERE REPLACE(
+                REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    TRIM(COALESCE(c2.dni, '')),
+                                    '.', ''
+                                ),
+                                '-', ''
+                            ),
+                            ' ', ''
+                        ),
+                        '/', ''
+                    ),
+                    '_', ''
+                ),
+                ',', ''
+            ) IN :documents
+            OR TRIM(LEADING '0' FROM REPLACE(
+                REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    TRIM(COALESCE(c2.dni, '')),
+                                    '.', ''
+                                ),
+                                '-', ''
+                            ),
+                            ' ', ''
+                        ),
+                        '/', ''
+                    ),
+                    '_', ''
+                ),
+                ',', ''
+            )) IN :documents_no_zero
+            """
+        ).bindparams(
+            bindparam("documents", expanding=True),
+            bindparam("documents_no_zero", expanding=True),
+        )
+
+        try:
+            rows = self.mysql_session.execute(
+                statement,
+                {
+                    "documents": sorted(normalized_docs),
+                    "documents_no_zero": sorted(normalized_docs_no_zero),
+                },
+            )
+            contract_ids = {int(row[0]) for row in rows if row and row[0] is not None}
+            logger.info(
+                "Documentos bloqueados resueltos a %s contrato(s)",
+                len(contract_ids),
+            )
+            return contract_ids
+        except Exception as error:
+            logger.error(
+                "Error resolviendo contratos por documento bloqueado: %s",
+                error,
+            )
+            raise
 
     def get_contracts_with_arrears(
         self,
@@ -48,19 +151,40 @@ class ContractService:
             f"Consultando contratos entre {min_days} y {max_days} dias de atraso..."
         )
 
-        exclusion_clause = ""
+        effective_exclusions: Set[int] = set()
         if excluded_contract_ids:
-            filtered_ids = sorted(
+            effective_exclusions.update(
                 int(contract_id)
                 for contract_id in excluded_contract_ids
                 if int(contract_id) > 0
             )
-            if filtered_ids:
-                exclusion_clause = (
-                    "  AND ca.contract_id NOT IN ("
-                    + ",".join(str(contract_id) for contract_id in filtered_ids)
-                    + ")\n"
+
+        blocked_docs = {
+            self.normalize_customer_document(doc)
+            for doc in settings.blocked_customer_documents
+        }
+        blocked_docs = {doc for doc in blocked_docs if doc}
+        if blocked_docs:
+            blocked_contract_ids = self.get_contract_ids_by_customer_documents(blocked_docs)
+            if blocked_contract_ids:
+                logger.info(
+                    "Excluyendo %s contrato(s) por lista negra de cedula/documento",
+                    len(blocked_contract_ids),
                 )
+                effective_exclusions.update(blocked_contract_ids)
+
+        exclusion_clause = ""
+        filtered_ids = sorted(
+            int(contract_id)
+            for contract_id in effective_exclusions
+            if int(contract_id) > 0
+        )
+        if filtered_ids:
+            exclusion_clause = (
+                "  AND ca.contract_id NOT IN ("
+                + ",".join(str(contract_id) for contract_id in filtered_ids)
+                + ")\n"
+            )
 
         query = f"""
         SELECT

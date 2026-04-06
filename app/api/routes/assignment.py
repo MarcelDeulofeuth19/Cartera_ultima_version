@@ -336,6 +336,87 @@ async def health_check():
 
 
 @router.post(
+    "/finalize-assignments",
+    response_model=AssignmentResponse,
+    summary="Cierre masivo de asignaciones del dia",
+    description="""
+    Ejecuta el cierre masivo de todas las asignaciones activas:
+    1. Consulta datos actuales de MySQL (dias atraso, estado del contrato)
+    2. Cierra historial con fecha terminal y metadatos enriquecidos (dpd_terminal, dias_atraso_terminal, estado_actual)
+    3. Elimina todas las asignaciones activas de contract_advisors
+
+    Debe ejecutarse al final del dia para cerrar el ciclo de asignaciones.
+    Optimizado para bajo consumo de RAM.
+    """,
+    responses={
+        200: {"description": "Cierre masivo ejecutado exitosamente"},
+        409: {"description": "Otra instancia del proceso esta en ejecucion"},
+        500: {"description": "Error interno durante la ejecucion"},
+    },
+)
+async def finalize_assignments():
+    """
+    Endpoint de cierre masivo: cierra todas las asignaciones activas,
+    enriqueciendo el historial con datos actuales de MySQL.
+    """
+    start_time = datetime.now()
+    logger.info("=" * 100)
+    logger.info("[%s] SOLICITUD DE CIERRE MASIVO DE ASIGNACIONES", start_time)
+    logger.info("=" * 100)
+
+    try:
+        with acquire_process_lock():
+            logger.info("Lock adquirido. Iniciando cierre masivo...")
+
+            with db_manager.get_mysql_session() as mysql_session, \
+                 db_manager.get_postgres_session() as postgres_session:
+
+                assignment_service = AssignmentService(mysql_session, postgres_session)
+                stats = assignment_service.finalize_all_active_assignments()
+
+                end_time = datetime.now()
+                execution_time = (end_time - start_time).total_seconds()
+
+                logger.info("=" * 100)
+                logger.info(
+                    "CIERRE MASIVO COMPLETADO en %.2f segundos", execution_time
+                )
+                logger.info("=" * 100)
+
+                return AssignmentResponse(
+                    success=True,
+                    message="Cierre masivo de asignaciones completado exitosamente",
+                    execution_time=execution_time,
+                    results=stats,
+                    timestamp=end_time.isoformat(),
+                )
+
+    except ProcessLockError as e:
+        logger.warning("Cierre masivo bloqueado: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "Process already running",
+                "message": str(e),
+                "suggestion": "Espera a que el proceso actual termine",
+            },
+        )
+
+    except Exception as e:
+        logger.error("Error critico en cierre masivo: %s", str(e), exc_info=True)
+        error_time = (datetime.now() - start_time).total_seconds()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "Internal server error",
+                "message": f"Error durante el cierre masivo: {str(e)}",
+                "execution_time": error_time,
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+
+
+@router.post(
     "/process-manual-fixed",
     summary="Endpoint deshabilitado",
     description="Los contratos fijos manuales fueron removidos de la lógica operativa.",

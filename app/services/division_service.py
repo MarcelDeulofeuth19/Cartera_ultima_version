@@ -30,7 +30,152 @@ class DivisionService:
         self.postgres_session = postgres_session
         self.contract_service = ContractService(mysql_session)
         self.history_service = HistoryService(postgres_session)
+
+    def _load_customer_document_blacklist(self) -> Set[str]:
+        """Carga lista negra de clientes por cedula/documento."""
+        blocked_documents = {
+            ContractService.normalize_customer_document(raw_value)
+            for raw_value in settings.blocked_customer_documents
+        }
+        return {document for document in blocked_documents if document}
+
+    def _resolve_blocked_contract_ids(self) -> Set[int]:
+        """Resuelve contratos bloqueados por cedula/documento."""
+        blocked_documents = self._load_customer_document_blacklist()
+        if not blocked_documents:
+            return set()
+        return self.contract_service.get_contract_ids_by_customer_documents(
+            blocked_documents
+        )
+
+    def enforce_blacklist_on_active_assignments(
+        self,
+        blocked_contract_ids: Set[int],
+    ) -> Dict[str, int]:
+        """Elimina asignaciones activas de contratos bloqueados y cierra historial."""
+        stats = {
+            "blocked_found_active": 0,
+            "removed_from_contract_advisors": 0,
+            "history_closed": 0,
+        }
+        blocked_ids = {
+            int(contract_id)
+            for contract_id in (blocked_contract_ids or set())
+            if int(contract_id) > 0
+        }
+        if not blocked_ids:
+            return stats
+
+        active_rows = self.postgres_session.query(
+            ContractAdvisor.user_id,
+            ContractAdvisor.contract_id,
+        ).filter(
+            ContractAdvisor.contract_id.in_(blocked_ids)
+        ).all()
+        if not active_rows:
+            return stats
+
+        contracts_removed: Dict[int, List[int]] = {}
+        for user_id, contract_id in active_rows:
+            contracts_removed.setdefault(int(user_id), []).append(int(contract_id))
+        stats["blocked_found_active"] = len(active_rows)
+
+        terminal_metadata = {
+            int(contract_id): {
+                "tipo": "BLACKLIST_CLIENTE",
+                "estado_actual": "BLOQUEADO_CEDULA",
+            }
+            for _, contract_id in active_rows
+        }
+        history_stats = self.history_service.close_assignments(
+            contracts_removed,
+            terminal_metadata=terminal_metadata,
+        )
+        stats["history_closed"] = int(history_stats.get("total_closed", 0))
+
+        deleted_count = self.postgres_session.query(ContractAdvisor).filter(
+            ContractAdvisor.contract_id.in_(blocked_ids)
+        ).delete(synchronize_session=False)
+        self.postgres_session.commit()
+        stats["removed_from_contract_advisors"] = int(deleted_count or 0)
+        return stats
     
+    def enforce_promises_on_active_assignments(
+        self,
+        promise_contract_ids: Set[int],
+    ) -> Dict[str, int]:
+        """
+        Remueve asignaciones activas de contratos con promesa activa y cierra historial.
+
+        Regla: si un contrato ya asignado ahora tiene una promesa activa
+        (acuerdo_de_pago con promise_date >= hoy), se retira de contract_advisors
+        y se cierra su historial con tipo FIJO_PROMESA_ACTIVA.
+        """
+        stats = {
+            "promise_found_active": 0,
+            "removed_from_contract_advisors": 0,
+            "history_closed": 0,
+        }
+        promise_ids = {
+            int(contract_id)
+            for contract_id in (promise_contract_ids or set())
+            if int(contract_id) > 0
+        }
+        if not promise_ids:
+            return stats
+
+        try:
+            active_rows = self.postgres_session.query(
+                ContractAdvisor.user_id,
+                ContractAdvisor.contract_id,
+            ).filter(
+                ContractAdvisor.contract_id.in_(promise_ids)
+            ).all()
+
+            if not active_rows:
+                return stats
+
+            contracts_removed: Dict[int, List[int]] = {}
+            for user_id, contract_id in active_rows:
+                contracts_removed.setdefault(int(user_id), []).append(int(contract_id))
+
+            stats["promise_found_active"] = len(active_rows)
+
+            terminal_metadata = {
+                int(contract_id): {
+                    "tipo": "FIJO_PROMESA_ACTIVA",
+                    "estado_actual": "PROMESA_ACTIVA",
+                }
+                for _, contract_id in active_rows
+            }
+            history_stats = self.history_service.close_assignments(
+                contracts_removed,
+                terminal_metadata=terminal_metadata,
+            )
+            stats["history_closed"] = int(history_stats.get("total_closed", 0))
+
+            deleted_count = self.postgres_session.query(ContractAdvisor).filter(
+                ContractAdvisor.contract_id.in_(promise_ids)
+            ).delete(synchronize_session=False)
+            self.postgres_session.commit()
+            stats["removed_from_contract_advisors"] = int(deleted_count or 0)
+
+            logger.info(
+                "Enforcement promesas activas (division): encontrados=%s, "
+                "eliminados=%s, historial_cerrado=%s",
+                stats["promise_found_active"],
+                stats["removed_from_contract_advisors"],
+                stats["history_closed"],
+            )
+            return stats
+        except Exception as error:
+            self.postgres_session.rollback()
+            logger.error(
+                "Error aplicando enforcement de promesas activas (division): %s",
+                error,
+            )
+            raise
+
     def get_fixed_contracts(self) -> Dict[int, Set[int]]:
         """
         Obtiene los contratos FIJOS desde la tabla managements en PostgreSQL.
@@ -208,7 +353,10 @@ class DivisionService:
             logger.error(f"✗ Error al consultar asignaciones actuales para división: {e}")
             raise
     
-    def get_contracts_for_division(self) -> List[Dict]:
+    def get_contracts_for_division(
+        self,
+        excluded_contract_ids: Set[int] | None = None,
+    ) -> List[Dict]:
         """
         Obtiene contratos con 1 a 60 días de atraso desde MySQL.
         Reutiliza la lógica de ContractService pero con diferentes parámetros.
@@ -225,7 +373,8 @@ class DivisionService:
             # Usar el método existente pero con parámetros de división
             contracts = self.contract_service.get_contracts_with_arrears(
                 min_days=settings.DIVISION_MIN_DAYS,
-                max_days=settings.DIVISION_MAX_DAYS
+                max_days=settings.DIVISION_MAX_DAYS,
+                excluded_contract_ids=excluded_contract_ids,
             )
             
             logger.info(
@@ -425,7 +574,11 @@ class DivisionService:
         
         return new_assignments, contracts_days_map
     
-    def save_assignments(self, assignments: Dict[int, List[int]]) -> Dict[str, int]:
+    def save_assignments(
+        self,
+        assignments: Dict[int, List[int]],
+        excluded_contract_ids: Set[int] | None = None,
+    ) -> Dict[str, int]:
         """
         Guarda las nuevas asignaciones en la base de datos y en el historial.
         
@@ -447,12 +600,22 @@ class DivisionService:
             stats[f'inserted_user_{user_id}'] = 0
             
         new_assignments = {}  # Para registrar en historial
+        blocked_ids = {
+            int(contract_id)
+            for contract_id in (excluded_contract_ids or set())
+            if int(contract_id) > 0
+        }
         
         try:
             # OPTIMIZACIÓN: Obtener TODOS los contratos ya asignados de una sola vez
             all_contract_ids = set()
             for contract_ids in assignments.values():
                 all_contract_ids.update(contract_ids)
+            all_contract_ids = {
+                int(contract_id)
+                for contract_id in all_contract_ids
+                if int(contract_id) not in blocked_ids
+            }
             
             logger.info(f"Verificando duplicados para {len(all_contract_ids)} contratos únicos...")
             existing_assignments = self.postgres_session.query(
@@ -469,6 +632,8 @@ class DivisionService:
                 new_assignments[user_id] = []
                 
                 for contract_id in contract_ids:
+                    if int(contract_id) in blocked_ids:
+                        continue
                     if contract_id not in existing_contract_ids:
                         new_assignment = ContractAdvisor(
                             contract_id=contract_id,
@@ -500,7 +665,11 @@ class DivisionService:
             self.postgres_session.rollback()
             raise
     
-    def ensure_fixed_contracts_assigned(self, fixed_contracts: Dict[int, Set[int]]) -> Dict[str, int]:
+    def ensure_fixed_contracts_assigned(
+        self,
+        fixed_contracts: Dict[int, Set[int]],
+        excluded_contract_ids: Set[int] | None = None,
+    ) -> Dict[str, int]:
         """
         Asegura que TODOS los contratos fijos estén insertados en contract_advisors.
         Si un contrato fijo NO está asignado, lo inserta automáticamente.
@@ -518,6 +687,11 @@ class DivisionService:
             stats[f'inserted_user_{user_id}'] = 0
             
         new_fixed_assignments = {}
+        blocked_ids = {
+            int(contract_id)
+            for contract_id in (excluded_contract_ids or set())
+            if int(contract_id) > 0
+        }
         
         try:
             # Obtener TODOS los contratos ya asignados
@@ -528,7 +702,11 @@ class DivisionService:
             
             # Para cada usuario de división, identificar contratos fijos NO asignados
             for user_id in settings.DIVISION_USER_IDS:
-                user_fixed_contracts = fixed_contracts.get(user_id, set())
+                user_fixed_contracts = {
+                    int(contract_id)
+                    for contract_id in fixed_contracts.get(user_id, set())
+                    if int(contract_id) not in blocked_ids
+                }
                 
                 if not user_fixed_contracts:
                     continue
@@ -604,6 +782,9 @@ class DivisionService:
         
         results = {
             'success': False,
+            'blacklist_documents_count': 0,
+            'blacklist_contracts_count': 0,
+            'blacklist_enforcement_stats': {},
             'fixed_contracts': {},
             'fixed_inserted_stats': {},
             'contracts_to_assign': [],
@@ -614,23 +795,60 @@ class DivisionService:
         }
         
         try:
-            # 1. Obtener contratos fijos
+            blocked_documents = self._load_customer_document_blacklist()
+            blocked_contract_ids = self._resolve_blocked_contract_ids()
+            results['blacklist_documents_count'] = len(blocked_documents)
+            results['blacklist_contracts_count'] = len(blocked_contract_ids)
+            results['blacklist_enforcement_stats'] = (
+                self.enforce_blacklist_on_active_assignments(blocked_contract_ids)
+            )
+
+            # 1. Obtener contratos fijos (promesas activas) para excluirlos
             fixed_contracts = self.get_fixed_contracts()
+            if blocked_contract_ids:
+                fixed_contracts = {
+                    user_id: {
+                        int(contract_id)
+                        for contract_id in contract_ids
+                        if int(contract_id) not in blocked_contract_ids
+                    }
+                    for user_id, contract_ids in fixed_contracts.items()
+                }
+
+            # Contratos con promesa activa se excluyen de asignacion
+            promise_contract_ids: set[int] = set()
+            for contract_ids in fixed_contracts.values():
+                promise_contract_ids.update(contract_ids)
+
+            logger.info(
+                "Contratos con promesa activa excluidos de division: %s",
+                len(promise_contract_ids),
+            )
+
+            # Remover asignaciones activas de contratos con promesa activa
+            results['promise_enforcement_stats'] = (
+                self.enforce_promises_on_active_assignments(promise_contract_ids)
+            )
+
             results['fixed_contracts'] = {
                 k: list(v) for k, v in fixed_contracts.items()
             }
-            
-            # 2. Asegurar que todos los contratos fijos estén insertados
-            fixed_insert_stats = self.ensure_fixed_contracts_assigned(
-                fixed_contracts
-            )
-            results['fixed_inserted_stats'] = fixed_insert_stats
-            
+            results['promise_excluded_count'] = len(promise_contract_ids)
+            results['fixed_inserted_stats'] = {
+                "skipped": "contratos con promesa activa no se asignan",
+                "promise_excluded": len(promise_contract_ids),
+            }
+
+            # Excluir promesas activas del proceso de asignacion
+            excluded_from_assignment = blocked_contract_ids | promise_contract_ids
+
             # 3. Obtener asignaciones actuales
             current_assignments = self.get_current_assignments()
-            
+
             # 4. Obtener contratos entre 1 y 60 días de atraso
-            contracts_with_arrears = self.get_contracts_for_division()
+            contracts_with_arrears = self.get_contracts_for_division(
+                excluded_contract_ids=excluded_from_assignment,
+            )
             contract_ids = [c['contract_id'] for c in contracts_with_arrears]
             results['contracts_to_assign'] = contract_ids
             
@@ -646,7 +864,10 @@ class DivisionService:
             results['contracts_days_map'] = contracts_days_map
             
             # 6. Guardar asignaciones
-            insert_stats = self.save_assignments(new_assignments)
+            insert_stats = self.save_assignments(
+                new_assignments,
+                excluded_contract_ids=blocked_contract_ids,
+            )
             results['insert_stats'] = insert_stats
             
             # 7. Resultado final

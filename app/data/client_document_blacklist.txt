@@ -1,0 +1,3 @@
+# Lista negra de clientes por cedula/documento.
+# Un documento por linea. Solo digitos.
+500102

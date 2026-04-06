@@ -4,13 +4,14 @@ Conexion y sesiones para la base interna de configuracion/auditoria.
 from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.runtime_config.models import RuntimeConfigBase
 
 _engine = create_engine(
     settings.INTERNAL_CONFIG_DATABASE_URL,
-    pool_pre_ping=True,
+    poolclass=NullPool,  # Sin pool: conexion bajo demanda, cierre inmediato
     future=True,
 )
 

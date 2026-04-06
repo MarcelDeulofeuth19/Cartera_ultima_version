@@ -3,6 +3,7 @@ Aplicacion principal FastAPI - Sistema de Asignacion de Contratos.
 Punto de entrada de la aplicacion.
 """
 import logging
+import logging.handlers
 import sys
 from contextlib import asynccontextmanager
 
@@ -23,7 +24,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("assignment_process.log", encoding="utf-8"),
+        logging.handlers.RotatingFileHandler(
+            "assignment_process.log",
+            maxBytes=10_000_000,   # 10 MB por archivo
+            backupCount=3,         # Maximo 3 archivos rotados (30 MB total)
+            encoding="utf-8",
+        ),
     ],
 )
 

@@ -2,6 +2,8 @@
 ConfiguraciÃ³n centralizada de la aplicaciÃ³n.
 Gestiona las credenciales de bases de datos y parÃ¡metros del sistema.
 """
+import re
+from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import List
@@ -103,7 +105,7 @@ class Settings(BaseSettings):
     # - COBYSER_NOTIFICATION_RECIPIENTS: recibe notificacion + base de Cobyser
     # - SERLEFIN_NOTIFICATION_RECIPIENTS: recibe solo notificacion (sin Excel)
     NOTIFICATION_RECIPIENTS: str = (
-        "mdeulofeuth@alocredit.co,kcamargo@alocredit.co,"
+        "mdeulofeuth@alocredit.co,"
         "fcamacho@alocredit.co,jcarrasco@alocredit.co"
     )
     COBYSER_NOTIFICATION_RECIPIENTS: str = (
@@ -116,6 +118,9 @@ class Settings(BaseSettings):
     # Lista negra de contratos (TXT)
     BLACKLIST_ENABLED: bool = False
     CONTRACT_BLACKLIST_FILE: str = "app/data/contract_blacklist.txt"
+    # Lista negra de clientes por documento/cedula (CSV + TXT)
+    CLIENT_DOCUMENT_BLACKLIST: str = "500102"
+    CLIENT_DOCUMENT_BLACKLIST_FILE: str = "app/data/client_document_blacklist.txt"
 
     # SMTP para envio de correos
     SMTP_SERVER: str = "smtp-relay.gmail.com"
@@ -231,6 +236,46 @@ class Settings(BaseSettings):
         if weekdays:
             return weekdays
         return list(fallback)
+
+    @staticmethod
+    def _normalize_document_value(raw_value: str) -> str:
+        """Normaliza cedula/documento a solo digitos."""
+        cleaned = re.sub(r"\D+", "", str(raw_value or ""))
+        return cleaned.strip()
+
+    def _read_blacklisted_documents_from_file(self) -> List[str]:
+        """Lee documentos bloqueados desde TXT (1 por linea o mezclado)."""
+        path = Path(str(self.CLIENT_DOCUMENT_BLACKLIST_FILE or "").strip())
+        if not path.exists():
+            return []
+
+        try:
+            raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+
+        docs: List[str] = []
+        for token in re.findall(r"\d+", raw_text):
+            normalized = self._normalize_document_value(token)
+            if normalized and normalized not in docs:
+                docs.append(normalized)
+        return docs
+
+    @property
+    def blocked_customer_documents(self) -> List[str]:
+        """Retorna lista unica de documentos bloqueados (CSV + archivo)."""
+        docs: List[str] = []
+
+        for raw_doc in str(self.CLIENT_DOCUMENT_BLACKLIST or "").split(","):
+            normalized = self._normalize_document_value(raw_doc)
+            if normalized and normalized not in docs:
+                docs.append(normalized)
+
+        for file_doc in self._read_blacklisted_documents_from_file():
+            if file_doc not in docs:
+                docs.append(file_doc)
+
+        return docs
 
     @property
     def auto_assignment_weekdays(self) -> List[int]:

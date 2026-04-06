@@ -2,17 +2,18 @@
 Panel visual protegido por hash para configurar parametros de asignacion.
 """
 import html
+import io
 import logging
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 from urllib.parse import urlencode
 
 import psycopg2
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import text
 
 from app.core.config import settings
@@ -715,6 +716,32 @@ def _load_assignment_history_report(
     }
 
 
+def _get_active_promise_contract_ids() -> Set[int]:
+    """Retorna set de contract_ids con promesas activas (acuerdo_de_pago con promise_date >= hoy)."""
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT m.contract_id::BIGINT
+                FROM alocreditindicators.managements m
+                WHERE m.effect = %s
+                  AND m.promise_date IS NOT NULL
+                  AND m.promise_date >= CURRENT_DATE
+                """,
+                (settings.EFFECT_ACUERDO_PAGO,),
+            )
+            return {int(row[0]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def _empty_mora_rotation_stats(label: str) -> dict:
     matrix = {
         initial_bucket: {
@@ -1220,6 +1247,26 @@ def _render_assignment_history_report_html(
             params["contract_id"] = int(selected_contract_id)
         return f"{history_path}?{urlencode(params)}"
 
+    download_path = f"/{panel_hash}/history/asignados-eliminados/download"
+    download_params: dict[str, str | int] = {}
+    if report.get("start_date"):
+        download_params["start_date"] = str(report["start_date"])
+    if report.get("end_date"):
+        download_params["end_date"] = str(report["end_date"])
+    if report.get("min_days") is not None:
+        download_params["min_days"] = int(report["min_days"])
+    if report.get("max_days") is not None:
+        download_params["max_days"] = int(report["max_days"])
+    if selected_status:
+        download_params["status"] = selected_status
+    if selected_house:
+        download_params["house"] = selected_house
+    if selected_user_id is not None:
+        download_params["user_id"] = int(selected_user_id)
+    if selected_contract_id is not None:
+        download_params["contract_id"] = int(selected_contract_id)
+    download_url = f"{download_path}?{urlencode(download_params)}" if download_params else download_path
+
     pager_html = ""
     if int(report.get("total_rows", 0) or 0) > 0:
         prev_href = _build_history_url(int(report.get("page", 1)) - 1)
@@ -1442,6 +1489,7 @@ def _render_assignment_history_report_html(
       <br />
       <a class="btn" href="{html.escape(back_path)}">Volver al panel</a>
       <a class="btn btn-alt" href="{html.escape(reset_filters_path)}">Limpiar filtros</a>
+      <a class="btn" href="{html.escape(download_url)}" style="background:#1d4ed8">Descargar Excel</a>
 
       <form class="filters" method="get" action="{html.escape(history_path)}">
         <input type="hidden" name="page" value="1" />
@@ -2399,6 +2447,207 @@ async def assignment_history_report(
         return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
+@app.get("/{panel_hash}/history/asignados-eliminados/download", include_in_schema=False)
+async def download_assignment_history(
+    request: Request,
+    panel_hash: str,
+    start_date: str = "",
+    end_date: str = "",
+    min_days: str = "",
+    max_days: str = "",
+    status: str = "",
+    house: str = "",
+    user_id: str = "",
+    contract_id: str = "",
+):
+    """Descarga Excel con todo el historial de asignados/eliminados y columna de promesa activa."""
+    _assert_hash(panel_hash)
+    auth_redirect = _require_panel_auth(request, panel_hash)
+    if auth_redirect is not None:
+        return auth_redirect
+
+    if not start_date:
+        start_date = _current_month_start().isoformat()
+
+    try:
+        parsed_start_date = _parse_start_date(start_date)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    parsed_end_date = None
+    if (end_date or "").strip():
+        try:
+            parsed_end_date = _parse_start_date(end_date)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    parsed_min_days = None
+    if (min_days or "").strip():
+        try:
+            parsed_min_days = int(min_days)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="min_days debe ser numerico")
+
+    parsed_max_days = None
+    if (max_days or "").strip():
+        try:
+            parsed_max_days = int(max_days)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="max_days debe ser numerico")
+
+    selected_status = (status or "").strip().upper()
+    if selected_status not in {"", "ASIGNADO", "ELIMINADO"}:
+        raise HTTPException(status_code=400, detail="status invalido")
+
+    selected_house = (house or "").strip().lower()
+    if selected_house not in {"", "cobyser", "serlefin"}:
+        raise HTTPException(status_code=400, detail="house invalida")
+
+    selected_user_id = None
+    if (user_id or "").strip():
+        try:
+            selected_user_id = int(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="user_id debe ser numerico")
+
+    selected_contract_id = None
+    if (contract_id or "").strip():
+        try:
+            selected_contract_id = int(contract_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="contract_id debe ser numerico")
+
+    try:
+        import pandas as pd
+
+        days_expr = (
+            "COALESCE("
+            "CASE WHEN NULLIF(TRIM(h.dias_atraso_terminal::text), '') ~ '^-?\\d+$' "
+            "THEN TRIM(h.dias_atraso_terminal::text)::int ELSE NULL END, "
+            "CASE WHEN NULLIF(TRIM(h.dias_atraso_incial::text), '') ~ '^-?\\d+$' "
+            "THEN TRIM(h.dias_atraso_incial::text)::int ELSE NULL END"
+            ")"
+        )
+
+        where_clauses = ["1=1"]
+        params: dict[str, object] = {}
+
+        if parsed_start_date is not None:
+            where_clauses.append('h."Fecha Inicial"::date >= %(start_date)s')
+            params["start_date"] = parsed_start_date
+        if parsed_end_date is not None:
+            where_clauses.append('h."Fecha Inicial"::date <= %(end_date)s')
+            params["end_date"] = parsed_end_date
+        if parsed_min_days is not None:
+            where_clauses.append(f"{days_expr} >= %(min_days)s")
+            params["min_days"] = int(parsed_min_days)
+        if parsed_max_days is not None:
+            where_clauses.append(f"{days_expr} <= %(max_days)s")
+            params["max_days"] = int(parsed_max_days)
+        if selected_status == "ASIGNADO":
+            where_clauses.append('h."Fecha Terminal" IS NULL')
+        elif selected_status == "ELIMINADO":
+            where_clauses.append('h."Fecha Terminal" IS NOT NULL')
+        if selected_house:
+            house_user_ids = sorted(HOUSE_USER_IDS.get(selected_house, set()))
+            if house_user_ids:
+                where_clauses.append(
+                    "h.user_id IN (" + ",".join(str(int(uid)) for uid in house_user_ids) + ")"
+                )
+        if selected_user_id is not None:
+            where_clauses.append("h.user_id = %(user_id_filter)s")
+            params["user_id_filter"] = int(selected_user_id)
+        if selected_contract_id is not None:
+            where_clauses.append("h.contract_id = %(contract_id_filter)s")
+            params["contract_id_filter"] = int(selected_contract_id)
+
+        where_sql = " AND ".join(where_clauses)
+
+        conn = psycopg2.connect(
+            host=settings.POSTGRES_HOST,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            dbname=settings.POSTGRES_DATABASE,
+            port=settings.POSTGRES_PORT,
+        )
+        try:
+            with conn.cursor() as cur:
+                query_sql = f"""
+                SELECT
+                    h.id,
+                    h.user_id,
+                    h.contract_id,
+                    h."Fecha Inicial" AS fecha_inicial,
+                    h."Fecha Terminal" AS fecha_terminal,
+                    h.tipo,
+                    h.dpd_inicial,
+                    h.dpd_final,
+                    h.dpd_actual,
+                    h.dias_atraso_incial,
+                    h.dias_atraso_terminal,
+                    COALESCE(NULLIF(TRIM(h.estado_actual::text), ''), 'SIN_ESTADO') AS estado_actual,
+                    CASE
+                        WHEN h."Fecha Terminal" IS NULL THEN 'ASIGNADO'
+                        ELSE 'ELIMINADO'
+                    END AS estado
+                FROM alocreditindicators.contract_advisors_history h
+                WHERE {where_sql}
+                ORDER BY h."Fecha Inicial" DESC, h.id DESC
+                """
+                cur.execute(query_sql, params)
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        promise_contract_ids = _get_active_promise_contract_ids()
+
+        data = []
+        for row in rows:
+            (
+                row_id, uid, cid, fecha_ini, fecha_term,
+                tipo, dpd_ini, dpd_fin, dpd_act,
+                dias_ini, dias_term, estado_actual, estado,
+            ) = row
+            casa = _format_user_label(uid)
+            data.append({
+                "ID": row_id,
+                "Casa": casa,
+                "User ID": uid,
+                "Contrato": cid,
+                "Fecha Inicial": _format_datetime(fecha_ini),
+                "Fecha Terminal": _format_datetime(fecha_term),
+                "Tipo": str(tipo or "-"),
+                "DPD Inicial": dpd_ini,
+                "DPD Final": dpd_fin,
+                "DPD Actual": dpd_act,
+                "Dias Atraso Inicial": dias_ini,
+                "Dias Atraso Terminal": dias_term,
+                "Estado Actual": str(estado_actual or "-"),
+                "Estado": estado,
+                "Promesa Activa": "SI" if int(cid) in promise_contract_ids else "NO",
+            })
+
+        df = pd.DataFrame(data)
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine="openpyxl")
+        buffer.seek(0)
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        filename = f"historial_asignados_eliminados_{today_str}.xlsx"
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                **NO_CACHE_HEADERS,
+            },
+        )
+    except Exception as error:
+        logger.error("Error generando descarga Excel de historial: %s", error)
+        raise HTTPException(status_code=500, detail=f"Error generando Excel: {error}")
+
+
 @app.get("/{panel_hash}/history/rotacion-mora", response_class=HTMLResponse, include_in_schema=False)
 async def mora_rotation_report(
     request: Request,
@@ -2636,8 +2885,9 @@ async def finalize_assignments_from_panel(request: Request, panel_hash: str) -> 
 
     try:
         with acquire_process_lock():
-            with db_manager.get_postgres_session() as postgres_session:
-                assignment_service = AssignmentService(None, postgres_session)
+            with db_manager.get_mysql_session() as mysql_session, \
+                 db_manager.get_postgres_session() as postgres_session:
+                assignment_service = AssignmentService(mysql_session, postgres_session)
                 stats = assignment_service.finalize_all_active_assignments()
 
         message = (

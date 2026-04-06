@@ -41,9 +41,8 @@ class DatabaseManager:
             logger.info(f"Conectando a MySQL: {settings.MYSQL_HOST}")
             self._mysql_engine = create_engine(
                 settings.mysql_url,
-                pool_pre_ping=True,  # Verifica conexiones antes de usarlas
-                pool_recycle=3600,   # Recicla conexiones cada hora
-                echo=settings.DEBUG  # Log de queries SQL en modo debug
+                poolclass=NullPool,   # Sin pool: conexion bajo demanda, cierre inmediato
+                echo=settings.DEBUG,
             )
             self._mysql_session_factory = sessionmaker(
                 bind=self._mysql_engine,
@@ -64,9 +63,8 @@ class DatabaseManager:
             logger.info(f"Conectando a PostgreSQL: {settings.POSTGRES_HOST}")
             self._postgres_engine = create_engine(
                 settings.postgres_url,
-                pool_pre_ping=True,
-                pool_recycle=3600,
-                echo=settings.DEBUG
+                poolclass=NullPool,   # Sin pool: conexion bajo demanda, cierre inmediato
+                echo=settings.DEBUG,
             )
             self._postgres_session_factory = sessionmaker(
                 bind=self._postgres_engine,
