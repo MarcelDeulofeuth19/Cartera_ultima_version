@@ -38,19 +38,16 @@ class AdminPanelAuthService:
         )
         return digest.hex()
 
-    def initialize_default_user_if_needed(self) -> None:
-        """
-        Crea usuario admin inicial en la base interna si aun no existe.
-        """
-        username = (settings.ADMIN_AUTH_DEFAULT_USERNAME or "").strip().lower()
-        password = settings.ADMIN_AUTH_DEFAULT_PASSWORD or ""
-        if not username or not password:
+    def _ensure_user(self, username: str, password: str) -> None:
+        """Create user if not exists."""
+        normalized = (username or "").strip().lower()
+        if not normalized or not password:
             return
 
         with get_runtime_config_session() as session:
             existing = (
                 session.query(RuntimeAdminPanelUser)
-                .filter(RuntimeAdminPanelUser.username == username)
+                .filter(RuntimeAdminPanelUser.username == normalized)
                 .first()
             )
             if existing:
@@ -60,12 +57,32 @@ class AdminPanelAuthService:
             password_hash = self._hash_password(password, salt_hex)
             session.add(
                 RuntimeAdminPanelUser(
-                    username=username,
+                    username=normalized,
                     password_salt=salt_hex,
                     password_hash=password_hash,
                     is_active=True,
                 )
             )
+
+    def initialize_default_user_if_needed(self) -> None:
+        """
+        Crea usuario admin y usuarios extra si aun no existen.
+        """
+        self._ensure_user(
+            settings.ADMIN_AUTH_DEFAULT_USERNAME,
+            settings.ADMIN_AUTH_DEFAULT_PASSWORD,
+        )
+
+        import json
+        try:
+            extra_users = json.loads(settings.ADMIN_EXTRA_USERS or "[]")
+            for user_data in extra_users:
+                self._ensure_user(
+                    user_data.get("username", ""),
+                    user_data.get("password", ""),
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     def verify_credentials(self, username: str, password: str) -> bool:
         """

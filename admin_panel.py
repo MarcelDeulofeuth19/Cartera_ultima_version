@@ -1,4 +1,4 @@
-﻿"""
+"""
 Panel visual protegido por hash para configurar parametros de asignacion.
 """
 import html
@@ -117,9 +117,9 @@ NO_CACHE_HEADERS = {
 }
 
 
-def _safe_next_path(raw_next: str, panel_hash: str) -> str:
+def _safe_next_path(raw_next: str) -> str:
     candidate = (raw_next or "").strip()
-    default_path = f"/{panel_hash}"
+    default_path = f"/"
     if not candidate:
         return default_path
     if candidate.startswith("//"):
@@ -129,17 +129,17 @@ def _safe_next_path(raw_next: str, panel_hash: str) -> str:
     return default_path
 
 
-def _build_login_redirect(panel_hash: str, next_path: str) -> RedirectResponse:
-    safe_next = _safe_next_path(next_path, panel_hash)
+def _build_login_redirect(next_path: str) -> RedirectResponse:
+    safe_next = _safe_next_path(next_path)
     query = urlencode({"next": safe_next})
     return RedirectResponse(
-        url=f"/{panel_hash}/login?{query}",
+        url=f"/login?{query}",
         status_code=303,
         headers=NO_CACHE_HEADERS,
     )
 
 
-def _require_panel_auth(request: Request, panel_hash: str) -> Optional[RedirectResponse]:
+def _require_panel_auth(request: Request) -> Optional[RedirectResponse]:
     if not settings.ADMIN_AUTH_ENABLED:
         return None
 
@@ -149,7 +149,7 @@ def _require_panel_auth(request: Request, panel_hash: str) -> Optional[RedirectR
     if not username:
         query = request.url.query
         current_path = request.url.path + (f"?{query}" if query else "")
-        return _build_login_redirect(panel_hash=panel_hash, next_path=current_path)
+        return _build_login_redirect( next_path=current_path)
 
     request.state.panel_user = username
     return None
@@ -157,17 +157,16 @@ def _require_panel_auth(request: Request, panel_hash: str) -> Optional[RedirectR
 
 def _render_login_html(
     *,
-    panel_hash: str,
     error_message: str = "",
     next_path: str = "",
 ) -> str:
-    safe_next = _safe_next_path(next_path, panel_hash)
+    safe_next = _safe_next_path(next_path)
     error_block = ""
     if error_message:
         error_block = (
-            "<div style='padding:10px 12px;border:1px solid #f4b2ad;"
-            "background:#fce7e6;color:#b42318;border-radius:10px;"
-            "margin-bottom:12px;font-size:.9rem'>"
+            "<div style='padding:12px 16px;border:1px solid #FECACA;"
+            "background:#FEF2F2;color:#DC2626;border-radius:12px;"
+            "margin-bottom:16px;font-size:.88rem'>"
             + html.escape(error_message)
             + "</div>"
         )
@@ -178,79 +177,104 @@ def _render_login_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Login Panel Seguro</title>
+  <title>Login - Alo Credit</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      margin: 0;
       min-height: 100vh;
       display: grid;
       place-items: center;
-      background:
-        radial-gradient(circle at 10% 10%, #cff2ec 0, #cff2ec00 48%),
-        radial-gradient(circle at 96% 2%, #fde2cc 0, #fde2cc00 42%),
-        linear-gradient(135deg, #ece5d6 0%, #f8f4ea 100%);
-      font-family: "Sora", "IBM Plex Sans", "Trebuchet MS", sans-serif;
-      color: #131a1f;
+      background: linear-gradient(135deg, #FFF5ED 0%, #FFE8D6 50%, #F5F5F7 100%);
+      font-family: 'Inter', -apple-system, sans-serif;
+      color: #3e4a60;
       padding: 20px;
     }}
     .card {{
-      width: min(420px, 100%);
-      border: 1px solid #d8d2c5;
-      background: #fffef9;
-      border-radius: 14px;
-      box-shadow: 0 16px 40px rgba(12, 20, 26, 0.12);
-      padding: 20px;
+      width: min(400px, 100%);
+      background: #FFFFFF;
+      border: 1px solid #E5E7EB;
+      border-radius: 20px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.08);
+      padding: 36px 32px;
+    }}
+    .logo {{
+      width: 56px; height: 56px; margin: 0 auto 18px;
+      background: linear-gradient(135deg, #FF8C42, #FF7A28);
+      border-radius: 16px; display: grid; place-items: center;
+      font-weight: 800; font-size: 24px; color: #fff;
+      box-shadow: 0 4px 16px rgba(255,140,66,0.3);
     }}
     h1 {{
-      margin: 0 0 10px;
-      font-size: 1.1rem;
-      text-transform: uppercase;
-      letter-spacing: .03em;
+      text-align: center;
+      margin: 0 0 4px;
+      font-size: 1.3rem;
+      font-weight: 800;
+      color: #3e4a60;
     }}
-    p {{
-      margin: 0 0 14px;
-      color: #5a6673;
-      font-size: .9rem;
+    .subtitle {{
+      text-align: center;
+      margin: 0 0 24px;
+      color: #5A6B8C;
+      font-size: .88rem;
     }}
     label {{
       display: block;
-      font-size: .85rem;
-      margin: 8px 0 4px;
-      color: #5a6673;
+      font-size: .78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 14px 0 5px;
+      color: #5A6B8C;
     }}
     input {{
       width: 100%;
-      border: 1px solid #c7c2b7;
+      border: 1px solid #E5E7EB;
       border-radius: 10px;
-      padding: 10px 12px;
+      padding: 11px 14px;
       font-size: .95rem;
-      background: #fffffc;
-      box-sizing: border-box;
+      background: #F9F9F9;
+      color: #3e4a60;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }}
+    input:focus {{
+      border-color: #FF8C42;
+      box-shadow: 0 0 0 3px rgba(255,140,66,0.15);
+      background: #fff;
     }}
     button {{
       border: 0;
-      border-radius: 10px;
-      padding: 11px 14px;
-      margin-top: 12px;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 20px;
       width: 100%;
       color: #fff;
+      font-size: .95rem;
       font-weight: 700;
-      background: linear-gradient(160deg, #14532d, #0f766e);
+      font-family: inherit;
+      background: linear-gradient(135deg, #FF8C42, #FF7A28);
       cursor: pointer;
+      transition: filter 0.15s;
+      box-shadow: 0 4px 12px rgba(255,140,66,0.25);
     }}
+    button:hover {{ filter: brightness(1.08); }}
     .meta {{
-      margin-top: 10px;
-      font-size: .8rem;
-      color: #5a6673;
+      margin-top: 16px;
+      font-size: .78rem;
+      color: #A0A0A0;
+      text-align: center;
     }}
   </style>
 </head>
 <body>
   <main class="card">
-    <h1>Panel Seguro - Login</h1>
-    <p>Acceso protegido para la URL /{html.escape(panel_hash)}</p>
+    <div class="logo">A</div>
+    <h1>Alo Credit</h1>
+    <p class="subtitle">Panel de Asignacion de Contratos</p>
     {error_block}
-    <form method="post" action="/{html.escape(panel_hash)}/login">
+    <form method="post" action="/login">
       <input type="hidden" name="next" value="{html.escape(safe_next)}" />
       <label for="username">Usuario</label>
       <input id="username" name="username" type="text" autocomplete="username" required />
@@ -265,7 +289,7 @@ def _render_login_html(
 """
 
 
-def _assert_hash(panel_hash: str) -> None:
+def _assert_hash() -> None:
     if panel_hash != PANEL_HASH:
         raise HTTPException(status_code=404, detail="Not Found")
 
@@ -454,13 +478,172 @@ def _latest_house_report_path(house_tag: str) -> Optional[Path]:
     return candidates[0]
 
 
-def _generate_house_report(user_id: int, user_name: str, house_tag: str) -> Path:
+def _get_history_contracts(user_id: int) -> list[int]:
+    """Get contracts from the LATEST assignment cycle only (same Fecha Inicial date)."""
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+    try:
+        with conn.cursor() as cur:
+            # Get the most recent assignment date for this user
+            cur.execute(
+                """
+                SELECT DISTINCT contract_id
+                FROM alocreditindicators.contract_advisors_history
+                WHERE user_id = %s
+                  AND "Fecha Inicial"::date = (
+                      SELECT MAX("Fecha Inicial"::date)
+                      FROM alocreditindicators.contract_advisors_history
+                      WHERE user_id = %s
+                  )
+                ORDER BY contract_id
+                """,
+                (user_id, user_id),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _generate_history_excel(user_id: int, user_name: str, house_tag: str) -> Path:
+    """Generate enriched Excel from history + production data, processed in batches."""
+    import pandas as pd
+
+    # Step 1: Get contracts from latest cycle in history
+    pg_conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+    try:
+        hist_query = """
+        SELECT
+            h.contract_id,
+            h."Fecha Inicial",
+            h."Fecha Terminal",
+            h.tipo,
+            h.dpd_inicial,
+            h.dpd_final,
+            h.dpd_actual,
+            h.dias_atraso_incial,
+            h.dias_atraso_terminal,
+            COALESCE(NULLIF(TRIM(h.estado_actual::text), ''), 'SIN_ESTADO') AS estado_actual,
+            CASE WHEN h."Fecha Terminal" IS NULL THEN 'ASIGNADO' ELSE 'ELIMINADO' END AS estado
+        FROM alocreditindicators.contract_advisors_history h
+        WHERE h.user_id = %s
+          AND h."Fecha Inicial"::date = (
+              SELECT MAX("Fecha Inicial"::date)
+              FROM alocreditindicators.contract_advisors_history
+              WHERE user_id = %s
+          )
+        ORDER BY h.contract_id
+        """
+        df_hist = pd.read_sql(hist_query, pg_conn, params=(user_id, user_id))
+    finally:
+        pg_conn.close()
+
+    if df_hist.empty:
+        raise ValueError(f"No hay registros historicos para {user_name}")
+
+    contract_ids = df_hist["contract_id"].tolist()
+    logger.info("Generando informe historico %s: %d contratos", house_tag, len(contract_ids))
+
+    # Step 2: Enrich with production data in batches of 2000
+    BATCH_SIZE = 2000
+    enriched_frames = []
+
+    for i in range(0, len(contract_ids), BATCH_SIZE):
+        batch = contract_ids[i:i + BATCH_SIZE]
+        lista = ",".join(str(int(c)) for c in batch)
+
+        try:
+            enriched_frames.append(
+                report_service_extended.generate_report_for_user(
+                    user_id=user_id,
+                    user_name=user_name,
+                    contracts=batch,
+                )[1]
+            )
+        except Exception as err:
+            logger.warning("Batch %d-%d fallo enriquecimiento: %s, usando datos basicos", i, i + len(batch), err)
+            # Fallback: just use history data for this batch
+            enriched_frames.append(
+                df_hist[df_hist["contract_id"].isin(batch)].copy()
+            )
+
+    # Merge all batches
+    if enriched_frames:
+        df_enriched = pd.concat([f for f in enriched_frames if f is not None and not f.empty], ignore_index=True)
+    else:
+        df_enriched = df_hist.copy()
+
+    # If enriched data has the detailed columns, merge history tracking columns
+    cols_lower = {str(c).lower(): c for c in df_enriched.columns}
+    contrato_col = cols_lower.get("contrato_x") or cols_lower.get("contrato")
+
+    if contrato_col and contrato_col in df_enriched.columns:
+        # Merge history columns (DPD, fechas, estado) onto enriched data
+        hist_merge = df_hist[["contract_id", "Fecha Inicial", "Fecha Terminal", "tipo",
+                              "dpd_inicial", "dpd_final", "dpd_actual",
+                              "dias_atraso_incial", "dias_atraso_terminal",
+                              "estado_actual", "estado"]].copy()
+        hist_merge = hist_merge.rename(columns={
+            "Fecha Inicial": "Asig. Fecha Inicial",
+            "Fecha Terminal": "Asig. Fecha Terminal",
+            "tipo": "Asig. Tipo",
+            "dpd_inicial": "Asig. DPD Inicial",
+            "dpd_final": "Asig. DPD Final",
+            "dpd_actual": "Asig. DPD Actual",
+            "dias_atraso_incial": "Asig. Dias Ini",
+            "dias_atraso_terminal": "Asig. Dias Term",
+            "estado_actual": "Asig. Estado Actual",
+            "estado": "Asig. Estado",
+        })
+
+        df_enriched[contrato_col] = pd.to_numeric(df_enriched[contrato_col], errors="coerce")
+        hist_merge["contract_id"] = pd.to_numeric(hist_merge["contract_id"], errors="coerce")
+        df_final = df_enriched.merge(hist_merge, left_on=contrato_col, right_on="contract_id", how="left")
+        df_final = df_final.drop(columns=["contract_id"], errors="ignore")
+    else:
+        df_final = df_enriched
+
+    reports_dir = _reports_dir()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_INFORME_{house_tag}.xlsx"
+    file_path = reports_dir / filename
+    df_final.to_excel(str(file_path), index=False, engine="openpyxl")
+    logger.info("Informe historico generado: %s (%d filas)", file_path, len(df_final))
+    return file_path
+
+
+def _generate_house_report(user_id: int, user_name: str, house_tag: str, use_history: bool = False) -> Path:
     last_report = _latest_house_report_path(house_tag)
-    contracts = report_service_extended.get_assigned_contracts(user_id)
+
+    # If history mode or no active contracts, use lightweight history Excel
+    if use_history:
+        return _generate_history_excel(user_id, user_name, house_tag)
+
+    house_user_ids = HOUSE_USER_IDS.get(house_tag.lower(), set())
+    if house_user_ids:
+        contracts = report_service_extended.get_assigned_contracts_for_house(
+            list(house_user_ids)
+        )
+    else:
+        contracts = report_service_extended.get_assigned_contracts(user_id)
     if not contracts:
-        if last_report and last_report.exists():
-            return last_report
-        raise ValueError(f"No hay contratos asignados para {user_name}")
+        # No active contracts - try history Excel instead
+        try:
+            return _generate_history_excel(user_id, user_name, house_tag)
+        except ValueError:
+            if last_report and last_report.exists():
+                return last_report
+            raise ValueError(f"No hay contratos para {user_name}")
 
     try:
         report_path, _ = report_service_extended.generate_report_for_user(
@@ -637,20 +820,27 @@ def _load_assignment_history_report(
     )
     try:
         with conn.cursor() as cur:
+            serlefin_ids = ",".join(str(int(u)) for u in sorted(HOUSE_USER_IDS.get("serlefin", set())))
+            cobyser_ids = ",".join(str(int(u)) for u in sorted(HOUSE_USER_IDS.get("cobyser", set())))
+
             summary_query = f"""
             SELECT
                 COUNT(*)::bigint AS total_rows,
                 COUNT(*) FILTER (WHERE h."Fecha Terminal" IS NULL)::bigint AS asignados,
-                COUNT(*) FILTER (WHERE h."Fecha Terminal" IS NOT NULL)::bigint AS eliminados
+                COUNT(*) FILTER (WHERE h."Fecha Terminal" IS NOT NULL)::bigint AS eliminados,
+                COUNT(*) FILTER (WHERE h."Fecha Terminal" IS NULL AND h.user_id IN ({serlefin_ids}))::bigint AS serlefin_asignados,
+                COUNT(*) FILTER (WHERE h."Fecha Terminal" IS NULL AND h.user_id IN ({cobyser_ids}))::bigint AS cobyser_asignados
             FROM alocreditindicators.contract_advisors_history h
             WHERE {where_sql}
             """
             cur.execute(summary_query, params)
-            summary_row = cur.fetchone() or (0, 0, 0)
+            summary_row = cur.fetchone() or (0, 0, 0, 0, 0)
 
             total_rows = int(summary_row[0] or 0)
             asignados = int(summary_row[1] or 0)
             eliminados = int(summary_row[2] or 0)
+            serlefin_asignados = int(summary_row[3] or 0)
+            cobyser_asignados = int(summary_row[4] or 0)
 
             total_pages = 1
             if total_rows > 0:
@@ -707,6 +897,8 @@ def _load_assignment_history_report(
         "total_rows": total_rows,
         "asignados": asignados,
         "eliminados": eliminados,
+        "serlefin_asignados": serlefin_asignados,
+        "cobyser_asignados": cobyser_asignados,
         "page": safe_page,
         "page_size": safe_page_size,
         "total_pages": total_pages,
@@ -1046,7 +1238,7 @@ def _render_mora_summary_table(summary: dict) -> str:
     """
 
 
-def _render_mora_rotation_report_html(panel_hash: str, report: dict) -> str:
+def _render_mora_rotation_report_html(report: dict) -> str:
     sections_html = ""
     for house_report in report["reports"]:
         sections_html += f"""
@@ -1064,7 +1256,7 @@ def _render_mora_rotation_report_html(panel_hash: str, report: dict) -> str:
         </section>
         """
 
-    back_path = f"/{panel_hash}"
+    back_path = f"/"
     return f"""
 <!doctype html>
 <html lang="es">
@@ -1213,41 +1405,23 @@ def _render_mora_panel_cards(report: dict) -> str:
 
 
 def _render_assignment_history_report_html(
-    panel_hash: str,
     report: dict,
-    title: str = "Informe Asignados y Eliminados",
+    title: str = "Historial de Asignaciones",
 ) -> str:
-    """Renderiza HTML del informe de asignados/eliminados (solo contract history)."""
-    history_path = f"/{panel_hash}/history/asignados-eliminados"
+    """Renderiza HTML moderno del informe de asignados/eliminados con AJAX."""
     selected_status = str(report.get("status_filter") or "")
     selected_house = str(report.get("house_filter") or "")
     selected_user_id = report.get("user_id_filter")
     selected_contract_id = report.get("contract_id_filter")
 
-    def _build_history_url(page_value: int) -> str:
-        params: dict[str, str | int] = {
-            "page": max(1, int(page_value)),
-            "page_size": int(report.get("page_size", 100) or 100),
-        }
-        if report.get("start_date"):
-            params["start_date"] = str(report["start_date"])
-        if report.get("end_date"):
-            params["end_date"] = str(report["end_date"])
-        if report.get("min_days") is not None:
-            params["min_days"] = int(report["min_days"])
-        if report.get("max_days") is not None:
-            params["max_days"] = int(report["max_days"])
-        if selected_status:
-            params["status"] = selected_status
-        if selected_house:
-            params["house"] = selected_house
-        if selected_user_id is not None:
-            params["user_id"] = int(selected_user_id)
-        if selected_contract_id is not None:
-            params["contract_id"] = int(selected_contract_id)
-        return f"{history_path}?{urlencode(params)}"
+    filter_start_date = str(report.get("start_date") or "")
+    filter_end_date = str(report.get("end_date") or "")
+    filter_min_days = str(report.get("min_days")) if report.get("min_days") is not None else ""
+    filter_max_days = str(report.get("max_days")) if report.get("max_days") is not None else ""
+    filter_user_id = str(selected_user_id) if selected_user_id is not None else ""
+    filter_contract_id = str(selected_contract_id) if selected_contract_id is not None else ""
 
-    download_path = f"/{panel_hash}/history/asignados-eliminados/download"
+    download_path = f"/history/asignados-eliminados/download"
     download_params: dict[str, str | int] = {}
     if report.get("start_date"):
         download_params["start_date"] = str(report["start_date"])
@@ -1267,107 +1441,33 @@ def _render_assignment_history_report_html(
         download_params["contract_id"] = int(selected_contract_id)
     download_url = f"{download_path}?{urlencode(download_params)}" if download_params else download_path
 
-    pager_html = ""
-    if int(report.get("total_rows", 0) or 0) > 0:
-        prev_href = _build_history_url(int(report.get("page", 1)) - 1)
-        next_href = _build_history_url(int(report.get("page", 1)) + 1)
-        first_href = _build_history_url(1)
-        last_href = _build_history_url(int(report.get("total_pages", 1) or 1))
+    back_path = f"/"
+    api_base = f"/api/history"
 
-        prev_class = "disabled" if not bool(report.get("has_prev")) else ""
-        next_class = "disabled" if not bool(report.get("has_next")) else ""
-
-        pager_html = f"""
-        <div class="pager">
-          <span>Pagina <strong>{int(report.get("page", 1) or 1)}</strong> de <strong>{int(report.get("total_pages", 1) or 1)}</strong></span>
-          <a class="{prev_class}" href="{html.escape(first_href if report.get('has_prev') else '#')}">Primera</a>
-          <a class="{prev_class}" href="{html.escape(prev_href if report.get('has_prev') else '#')}">Anterior</a>
-          <a class="{next_class}" href="{html.escape(next_href if report.get('has_next') else '#')}">Siguiente</a>
-          <a class="{next_class}" href="{html.escape(last_href if report.get('has_next') else '#')}">Ultima</a>
-        </div>
-        """
-
-    table_rows = ""
+    # Build initial data JSON for SSR hydration
+    initial_rows_json = []
     for row in report["rows"]:
-        (
-            row_id,
-            user_id,
-            contract_id,
-            fecha_inicial,
-            fecha_terminal,
-            tipo,
-            dpd_inicial,
-            dpd_final,
-            dpd_actual,
-            dias_inicial,
-            dias_terminal,
-            estado_actual,
-            estado,
-        ) = row
+        (row_id, uid, cid, fi, ft, tipo, dpd_i, dpd_f, dpd_a, di, dt, ea, est) = row
+        initial_rows_json.append({
+            "id": row_id, "user_id": uid, "user_label": _format_user_label(uid),
+            "contract_id": cid, "fecha_inicial": _format_datetime(fi),
+            "fecha_terminal": _format_datetime(ft), "tipo": str(tipo or "-"),
+            "dpd_inicial": str(dpd_i or "-"), "dpd_final": str(dpd_f or "-"),
+            "dpd_actual": str(dpd_a or "-"), "dias_inicial": di,
+            "dias_terminal": dt, "estado_actual": str(ea or "-"), "estado": est,
+        })
 
-        fecha_inicial_txt = _format_datetime(fecha_inicial)
-        fecha_terminal_txt = _format_datetime(fecha_terminal)
-        user_label = _format_user_label(user_id)
-        tipo_text = str(tipo or "-")
-        tipo_badge = (
-            "<span style='display:inline-block;padding:2px 6px;border-radius:999px;background:#fef3c7;color:#92400e;font-size:.72rem;font-weight:700;margin-left:6px'>FIJO</span>"
-            if "FIJO" in tipo_text.upper()
-            else ""
-        )
-        estado_actual_text = str(estado_actual or "-")
-
-        table_rows += (
-            "<tr>"
-            f"<td>{row_id}</td>"
-            f"<td>{html.escape(user_label)}</td>"
-            f"<td>{contract_id}</td>"
-            f"<td>{html.escape(fecha_inicial_txt)}</td>"
-            f"<td>{html.escape(fecha_terminal_txt)}</td>"
-            f"<td>{html.escape(tipo_text)}{tipo_badge}</td>"
-            f"<td>{html.escape(str(dpd_inicial or '-'))}</td>"
-            f"<td>{html.escape(str(dpd_final or '-'))}</td>"
-            f"<td>{html.escape(str(dpd_actual or '-'))}</td>"
-            f"<td>{html.escape(str(dias_inicial if dias_inicial is not None else '-'))}</td>"
-            f"<td>{html.escape(str(dias_terminal if dias_terminal is not None else '-'))}</td>"
-            f"<td>{html.escape(estado_actual_text)}</td>"
-            f"<td>{html.escape(estado)}</td>"
-            "</tr>"
-        )
-
-    if not table_rows:
-        if int(report.get("total_rows", 0) or 0) > 0:
-            table_rows = (
-                "<tr><td colspan='13'>No hay filas en esta pagina. Usa el paginador.</td></tr>"
-            )
-        elif report.get("start_date") or report.get("end_date"):
-            table_rows = (
-                "<tr><td colspan='13'>Sin registros para filtros aplicados.</td></tr>"
-            )
-        else:
-            table_rows = "<tr><td colspan='13'>Sin registros.</td></tr>"
-
-    back_path = f"/{panel_hash}"
-    reset_filters_path = (
-        f"{history_path}?{urlencode({'start_date': str(report.get('start_date') or ''), 'page': 1, 'page_size': report.get('page_size', 100)})}"
-    )
-    filter_start_date = str(report.get("start_date") or "")
-    filter_end_date = str(report.get("end_date") or "")
-    filter_min_days = (
-        str(report.get("min_days"))
-        if report.get("min_days") is not None
-        else ""
-    )
-    filter_max_days = (
-        str(report.get("max_days"))
-        if report.get("max_days") is not None
-        else ""
-    )
-    filter_user_id = str(selected_user_id) if selected_user_id is not None else ""
-    filter_contract_id = (
-        str(selected_contract_id)
-        if selected_contract_id is not None
-        else ""
-    )
+    import json as _json
+    initial_data = _json.dumps({
+        "total_rows": report["total_rows"], "asignados": report["asignados"],
+        "eliminados": report["eliminados"],
+        "serlefin_asignados": report.get("serlefin_asignados", 0),
+        "cobyser_asignados": report.get("cobyser_asignados", 0),
+        "page": report["page"],
+        "page_size": report["page_size"], "total_pages": report["total_pages"],
+        "has_prev": report["has_prev"], "has_next": report["has_next"],
+        "rows": initial_rows_json,
+    })
 
     return f"""
 <!doctype html>
@@ -1376,207 +1476,524 @@ def _render_assignment_history_report_html(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{html.escape(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
+    :root {{
+      --bg: #F5F5F7;
+      --surface: #FFFFFF;
+      --surface2: #F9F9F9;
+      --border: #E5E7EB;
+      --border-light: #F0F0F0;
+      --text: #3e4a60;
+      --text-secondary: #5A6B8C;
+      --accent: #FF8C42;
+      --accent-hover: #FF7A28;
+      --accent-soft: rgba(255,140,66,0.12);
+      --green: #10B981;
+      --green-soft: #ECFDF5;
+      --red: #EF4444;
+      --red-soft: #FEF2F2;
+      --amber: #F59E0B;
+      --amber-soft: #FFF5ED;
+      --blue: #3B82F6;
+      --blue-soft: #EEF2FF;
+      --teal: #14B8A6;
+      --teal-soft: rgba(20,184,166,0.12);
+      --radius: 12px;
+      --radius-sm: 8px;
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      margin: 0;
-      padding: 20px;
-      font-family: "Sora", "IBM Plex Sans", "Trebuchet MS", sans-serif;
-      background: #f5f2ea;
-      color: #1f2a33;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
     }}
-    .wrap {{ max-width: 1280px; margin: 0 auto; }}
-    .head {{
-      background: #fffef9;
-      border: 1px solid #d8d2c5;
-      border-radius: 12px;
-      padding: 14px;
-      margin-bottom: 12px;
-    }}
-    .kpi {{
-      display: inline-block;
-      margin-right: 14px;
-      padding: 8px 10px;
-      border: 1px solid #d8d2c5;
-      border-radius: 10px;
-      background: #faf8f1;
-      font-size: 0.9rem;
-    }}
-    .btn {{
-      display: inline-block;
-      text-decoration: none;
-      margin-top: 10px;
-      border-radius: 10px;
-      padding: 9px 12px;
-      background: #0f766e;
-      color: #fff;
-      font-weight: 700;
-    }}
-    .btn-alt {{
-      background: #1f2a33;
-      margin-left: 6px;
-    }}
-    .filters {{
-      margin-top: 10px;
-      border: 1px solid #e5e0d4;
-      border-radius: 10px;
-      background: #fcfaf4;
-      padding: 10px;
-    }}
-    .row {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin-bottom: 8px;
-    }}
-    label {{
-      display: block;
-      font-size: .78rem;
-      color: #5a6673;
-      margin-bottom: 3px;
-    }}
-    input, select {{
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid #d8d2c5;
-      border-radius: 8px;
-      padding: 7px 8px;
-      font-size: .84rem;
-      background: #fffef9;
-    }}
-    .table-wrap {{
-      background: #fffef9;
-      border: 1px solid #d8d2c5;
-      border-radius: 12px;
-      overflow: auto;
-    }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 1200px; }}
-    th, td {{ border-bottom: 1px solid #ece7db; text-align: left; padding: 8px 10px; font-size: 0.85rem; }}
-    th {{ background: #fcfbf7; text-transform: uppercase; font-size: 0.75rem; }}
-    .pager {{
+
+    .topbar {{
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 56px;
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
       align-items: center;
-      margin-top: 10px;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
     }}
-    .pager a {{
-      text-decoration: none;
-      border: 1px solid #d0c9ba;
+    .topbar-brand {{ display: flex; align-items: center; gap: 10px; }}
+    .topbar-brand .logo {{
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, #FF8C42, #FF7A28);
       border-radius: 8px;
-      padding: 5px 9px;
-      background: #fffef9;
-      color: #1f2a33;
-      font-size: .83rem;
+      display: grid; place-items: center;
+      font-weight: 800; font-size: 14px; color: #fff;
     }}
-    .pager a.disabled {{
-      opacity: .45;
-      pointer-events: none;
+    .topbar h1 {{ font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }}
+    .topbar-actions {{ display: flex; gap: 8px; align-items: center; }}
+    .topbar a, .topbar button {{
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      padding: 7px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer; text-decoration: none; transition: all 0.15s;
+    }}
+    .topbar a:hover, .topbar button:hover {{ background: var(--border); }}
+    .btn-primary {{ background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }}
+    .btn-primary:hover {{ background: var(--accent-hover) !important; }}
+    .btn-excel {{ background: #16a34a !important; border-color: #FF8C42 !important; color: #fff !important; }}
+
+    .container {{ max-width: 1600px; margin: 0 auto; padding: 20px 24px; }}
+
+    .kpi-grid {{
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }}
+    .kpi-card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      transition: border-color 0.2s, transform 0.15s;
+    }}
+    .kpi-card:hover {{ border-color: var(--border-light); transform: translateY(-1px); }}
+    .kpi-label {{
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-secondary); margin-bottom: 8px;
+    }}
+    .kpi-value {{
+      font-size: 28px; font-weight: 700; letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }}
+    .kpi-value.green {{ color: var(--green); }}
+    .kpi-value.red {{ color: var(--red); }}
+    .kpi-value.blue {{ color: var(--blue); }}
+    .kpi-value.teal {{ color: var(--teal); }}
+
+    .filters-panel {{
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px; margin-bottom: 16px;
+    }}
+    .filters-toggle {{
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none;
+    }}
+    .filters-toggle h3 {{
+      font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--text-secondary);
+    }}
+    .filters-toggle .arrow {{
+      font-size: 18px; color: var(--text-secondary); transition: transform 0.2s;
+    }}
+    .filters-toggle.open .arrow {{ transform: rotate(180deg); }}
+    .filters-body {{
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+      gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+    }}
+    .filter-group label {{
+      display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 5px;
+    }}
+    .filter-group input, .filter-group select {{
+      width: 100%; font-family: inherit; font-size: 13px; padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text); outline: none; transition: border-color 0.15s;
+    }}
+    .filter-group input:focus, .filter-group select:focus {{
+      border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft);
+    }}
+    .filter-group select {{ cursor: pointer; }}
+    .filter-group select option {{ background: var(--surface2); color: var(--text); }}
+    .filters-actions {{ grid-column: 1 / -1; display: flex; gap: 8px; padding-top: 4px; }}
+    .btn-filter {{
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      padding: 8px 20px; border-radius: var(--radius-sm); border: none; cursor: pointer; transition: all 0.15s;
+    }}
+    .btn-apply {{ background: var(--accent); color: #fff; }}
+    .btn-apply:hover {{ background: var(--accent-hover); }}
+    .btn-clear {{ background: var(--surface2); color: var(--text-secondary); border: 1px solid var(--border); }}
+    .btn-clear:hover {{ color: var(--text); background: var(--border); }}
+
+    .search-bar {{ position: relative; margin-bottom: 16px; }}
+    .search-bar input {{
+      width: 100%; font-family: inherit; font-size: 14px; padding: 10px 14px 10px 38px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text); outline: none; transition: border-color 0.15s;
+    }}
+    .search-bar input:focus {{ border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }}
+    .search-bar input::placeholder {{ color: var(--text-secondary); }}
+    .search-bar svg {{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); }}
+
+    .table-container {{
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden;
+    }}
+    .table-scroll {{ overflow-x: auto; max-height: 70vh; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1300px; }}
+    thead {{ position: sticky; top: 0; z-index: 10; }}
+    th {{
+      background: var(--surface2); color: var(--text-secondary);
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; padding: 10px 12px; text-align: left;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+      cursor: pointer; user-select: none; transition: color 0.15s;
+    }}
+    th:hover {{ color: var(--text); }}
+    th .sort-icon {{ display: inline-block; margin-left: 4px; opacity: 0.3; font-size: 10px; }}
+    th.sorted .sort-icon {{ opacity: 1; color: var(--accent); }}
+    td {{
+      padding: 9px 12px; font-size: 13px; border-bottom: 1px solid var(--border);
+      white-space: nowrap; font-variant-numeric: tabular-nums;
+    }}
+    tbody tr {{ transition: background 0.1s; }}
+    tbody tr:hover {{ background: var(--surface2); }}
+
+    .badge {{
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    }}
+    .badge-asignado {{ background: var(--green-soft); color: var(--green); }}
+    .badge-eliminado {{ background: var(--red-soft); color: var(--red); }}
+    .badge-fijo {{ background: var(--amber-soft); color: var(--amber); }}
+    .badge-tipo {{ background: var(--blue-soft); color: var(--blue); }}
+    .badge-cierre {{ background: var(--red-soft); color: var(--red); }}
+    .badge-blacklist {{ background: #7c3aed20; color: #a78bfa; }}
+
+    .pagination {{
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-top: 1px solid var(--border);
+      font-size: 13px; color: var(--text-secondary);
+    }}
+    .pagination .page-info strong {{ color: var(--text); }}
+    .page-buttons {{ display: flex; gap: 4px; }}
+    .page-btn {{
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      padding: 6px 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer; transition: all 0.15s;
+    }}
+    .page-btn:hover:not(:disabled) {{ background: var(--border); }}
+    .page-btn:disabled {{ opacity: 0.3; cursor: default; }}
+    .page-btn.active {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+
+    .loading-overlay {{
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.7); backdrop-filter: blur(4px);
+      z-index: 200; align-items: center; justify-content: center;
+    }}
+    .loading-overlay.active {{ display: flex; }}
+    .spinner {{
+      width: 40px; height: 40px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+
+    @media (max-width: 900px) {{
+      .container {{ padding: 12px; }}
+      .kpi-grid {{ grid-template-columns: repeat(3, 1fr); }}
+      .topbar {{ padding: 0 12px; }}
     }}
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="head">
-      <h2 style="margin:0 0 8px">{html.escape(title)}</h2>
-      <div class="kpi">Fecha Inicial desde: <strong>{html.escape(str(report["start_date_label"]))}</strong></div>
-      <div class="kpi">Fecha Inicial hasta: <strong>{html.escape(str(report["end_date_label"]))}</strong></div>
-      <div class="kpi">Dias minimo: <strong>{html.escape(str(report.get("min_days", "-") if report.get("min_days") is not None else "-"))}</strong></div>
-      <div class="kpi">Dias maximo: <strong>{html.escape(str(report.get("max_days", "-") if report.get("max_days") is not None else "-"))}</strong></div>
-      <div class="kpi">Total filas: <strong>{report["total_rows"]}</strong></div>
-      <div class="kpi">Asignados: <strong>{report["asignados"]}</strong></div>
-      <div class="kpi">Eliminados: <strong>{report["eliminados"]}</strong></div>
-      <div class="kpi">Pagina: <strong>{int(report.get("page", 1) or 1)}/{int(report.get("total_pages", 1) or 1)}</strong></div>
-      <br />
-      <a class="btn" href="{html.escape(back_path)}">Volver al panel</a>
-      <a class="btn btn-alt" href="{html.escape(reset_filters_path)}">Limpiar filtros</a>
-      <a class="btn" href="{html.escape(download_url)}" style="background:#1d4ed8">Descargar Excel</a>
+  <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-      <form class="filters" method="get" action="{html.escape(history_path)}">
-        <input type="hidden" name="page" value="1" />
-        <div class="row">
-          <div>
-            <label for="start_date">Inicio</label>
-            <input id="start_date" name="start_date" type="date" value="{html.escape(filter_start_date)}" />
-          </div>
-          <div>
-            <label for="end_date">Fin</label>
-            <input id="end_date" name="end_date" type="date" value="{html.escape(filter_end_date)}" />
-          </div>
-          <div>
-            <label for="min_days">Dias min</label>
-            <input id="min_days" name="min_days" type="number" min="0" value="{html.escape(filter_min_days)}" />
-          </div>
-          <div>
-            <label for="max_days">Dias max</label>
-            <input id="max_days" name="max_days" type="number" min="0" value="{html.escape(filter_max_days)}" />
-          </div>
-        </div>
-        <div class="row">
-          <div>
-            <label for="status">Estado</label>
-            <select id="status" name="status">
-              <option value="" {"selected" if not selected_status else ""}>Todos</option>
-              <option value="ASIGNADO" {"selected" if selected_status == "ASIGNADO" else ""}>ASIGNADO</option>
-              <option value="ELIMINADO" {"selected" if selected_status == "ELIMINADO" else ""}>ELIMINADO</option>
-            </select>
-          </div>
-          <div>
-            <label for="house">Casa</label>
-            <select id="house" name="house">
-              <option value="" {"selected" if not selected_house else ""}>Todas</option>
-              <option value="cobyser" {"selected" if selected_house == "cobyser" else ""}>Cobyser</option>
-              <option value="serlefin" {"selected" if selected_house == "serlefin" else ""}>Serlefin</option>
-            </select>
-          </div>
-          <div>
-            <label for="user_id">User ID</label>
-            <input id="user_id" name="user_id" type="number" min="1" value="{html.escape(filter_user_id)}" />
-          </div>
-          <div>
-            <label for="contract_id">Contrato</label>
-            <input id="contract_id" name="contract_id" type="number" min="1" value="{html.escape(filter_contract_id)}" />
-          </div>
-          <div>
-            <label for="page_size">Filas por pagina</label>
-            <select id="page_size" name="page_size">
-              <option value="25" {"selected" if int(report.get("page_size", 100) or 100) == 25 else ""}>25</option>
-              <option value="50" {"selected" if int(report.get("page_size", 100) or 100) == 50 else ""}>50</option>
-              <option value="100" {"selected" if int(report.get("page_size", 100) or 100) == 100 else ""}>100</option>
-              <option value="200" {"selected" if int(report.get("page_size", 100) or 100) == 200 else ""}>200</option>
-            </select>
-          </div>
-        </div>
-        <button class="btn" type="submit" style="margin-top:4px">Aplicar filtros</button>
-      </form>
-      {pager_html}
-    </section>
+  <nav class="topbar">
+    <div class="topbar-brand">
+      <div class="logo">A</div>
+      <h1>Alo Credit</h1>
+    </div>
+    <div class="topbar-actions" style="display:flex;gap:8px;align-items:center">
+      <a href="{html.escape(back_path)}/dashboard" style="font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none">Dashboard</a>
+      <a href="#" style="font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;text-decoration:none">Historial</a>
+      <a href="{html.escape(back_path)}/config" style="font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none">Configuracion</a>
+      <a href="{html.escape(download_url)}" style="font-family:inherit;font-size:13px;font-weight:600;padding:7px 14px;border-radius:10px;border:none;background:var(--accent);color:#fff;text-decoration:none">Descargar Excel</a>
+    </div>
+  </nav>
 
-    <section class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Casa</th>
-            <th>Contrato</th>
-            <th>Fecha Inicial</th>
-            <th>Fecha Terminal</th>
-            <th>Tipo</th>
-            <th>DPD Inicial</th>
-            <th>DPD Final</th>
-            <th>DPD Actual</th>
-            <th>Días Inicial</th>
-            <th>Días Terminal</th>
-            <th>Estado Actual</th>
-            <th>Estado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {table_rows}
-        </tbody>
-      </table>
-    </section>
-    {pager_html}
-  </main>
+  <div class="container">
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Registros</div>
+        <div class="kpi-value teal" id="kpiTotal">{report["total_rows"]:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Asignados</div>
+        <div class="kpi-value green" id="kpiAsignados">{report["asignados"]:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Eliminados</div>
+        <div class="kpi-value red" id="kpiEliminados">{report["eliminados"]:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Serlefin Asignados</div>
+        <div class="kpi-value blue" id="kpiSerlefin">{report.get("serlefin_asignados", 0):,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Cobyser Asignados</div>
+        <div class="kpi-value" id="kpiCobyser" style="color:#8B5CF6">{report.get("cobyser_asignados", 0):,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Pagina</div>
+        <div class="kpi-value" id="kpiPage">{int(report.get("page",1) or 1)}<span style="font-size:14px;color:var(--text-secondary)"> / {int(report.get("total_pages",1) or 1)}</span></div>
+      </div>
+    </div>
+
+    <div class="filters-panel">
+      <div class="filters-toggle open" id="filtersToggle" onclick="toggleFilters()">
+        <h3>Filtros avanzados</h3>
+        <span class="arrow">&#9660;</span>
+      </div>
+      <div class="filters-body" id="filtersBody">
+        <div class="filter-group">
+          <label>Fecha Inicio</label>
+          <input type="date" id="fStartDate" value="{html.escape(filter_start_date)}" />
+        </div>
+        <div class="filter-group">
+          <label>Fecha Fin</label>
+          <input type="date" id="fEndDate" value="{html.escape(filter_end_date)}" />
+        </div>
+        <div class="filter-group">
+          <label>Dias Min</label>
+          <input type="number" id="fMinDays" min="0" value="{html.escape(filter_min_days)}" placeholder="61" />
+        </div>
+        <div class="filter-group">
+          <label>Dias Max</label>
+          <input type="number" id="fMaxDays" min="0" value="{html.escape(filter_max_days)}" placeholder="240" />
+        </div>
+        <div class="filter-group">
+          <label>Estado</label>
+          <select id="fStatus">
+            <option value="" {"selected" if not selected_status else ""}>Todos</option>
+            <option value="ASIGNADO" {"selected" if selected_status == "ASIGNADO" else ""}>Asignado</option>
+            <option value="ELIMINADO" {"selected" if selected_status == "ELIMINADO" else ""}>Eliminado</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Casa</label>
+          <select id="fHouse">
+            <option value="" {"selected" if not selected_house else ""}>Todas</option>
+            <option value="cobyser" {"selected" if selected_house == "cobyser" else ""}>Cobyser</option>
+            <option value="serlefin" {"selected" if selected_house == "serlefin" else ""}>Serlefin</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>User ID</label>
+          <input type="number" id="fUserId" min="1" value="{html.escape(filter_user_id)}" placeholder="45" />
+        </div>
+        <div class="filter-group">
+          <label>Contrato</label>
+          <input type="number" id="fContractId" min="1" value="{html.escape(filter_contract_id)}" placeholder="ID" />
+        </div>
+        <div class="filter-group">
+          <label>Filas / Pagina</label>
+          <select id="fPageSize">
+            <option value="25" {"selected" if int(report.get("page_size",100) or 100) == 25 else ""}>25</option>
+            <option value="50" {"selected" if int(report.get("page_size",100) or 100) == 50 else ""}>50</option>
+            <option value="100" {"selected" if int(report.get("page_size",100) or 100) == 100 else ""}>100</option>
+            <option value="200" {"selected" if int(report.get("page_size",100) or 100) == 200 else ""}>200</option>
+          </select>
+        </div>
+        <div class="filters-actions">
+          <button class="btn-filter btn-apply" onclick="applyFilters()">Aplicar Filtros</button>
+          <button class="btn-filter btn-clear" onclick="clearFilters()">Limpiar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="search-bar">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="quickSearch" placeholder="Buscar en esta pagina (contrato, casa, tipo, estado...)" />
+    </div>
+
+    <div class="table-container">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th data-col="id" onclick="sortBy('id')">ID <span class="sort-icon">&#9650;</span></th>
+              <th data-col="user_label" onclick="sortBy('user_label')">Casa <span class="sort-icon">&#9650;</span></th>
+              <th data-col="contract_id" onclick="sortBy('contract_id')">Contrato <span class="sort-icon">&#9650;</span></th>
+              <th data-col="fecha_inicial" onclick="sortBy('fecha_inicial')">F. Inicial <span class="sort-icon">&#9650;</span></th>
+              <th data-col="fecha_terminal" onclick="sortBy('fecha_terminal')">F. Terminal <span class="sort-icon">&#9650;</span></th>
+              <th data-col="tipo" onclick="sortBy('tipo')">Tipo <span class="sort-icon">&#9650;</span></th>
+              <th data-col="dpd_inicial" onclick="sortBy('dpd_inicial')">DPD Ini <span class="sort-icon">&#9650;</span></th>
+              <th data-col="dpd_final" onclick="sortBy('dpd_final')">DPD Fin <span class="sort-icon">&#9650;</span></th>
+              <th data-col="dpd_actual" onclick="sortBy('dpd_actual')">DPD Act <span class="sort-icon">&#9650;</span></th>
+              <th data-col="dias_inicial" onclick="sortBy('dias_inicial')">Dias Ini <span class="sort-icon">&#9650;</span></th>
+              <th data-col="dias_terminal" onclick="sortBy('dias_terminal')">Dias Term <span class="sort-icon">&#9650;</span></th>
+              <th data-col="estado_actual" onclick="sortBy('estado_actual')">Estado Actual <span class="sort-icon">&#9650;</span></th>
+              <th data-col="estado" onclick="sortBy('estado')">Estado <span class="sort-icon">&#9650;</span></th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination"></div>
+    </div>
+  </div>
+
+  <script>
+    const API = '{html.escape(api_base)}';
+    let state = {{
+      data: {initial_data},
+      sortCol: null,
+      sortDir: 'asc',
+      searchTerm: '',
+    }};
+
+    function esc(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+
+    function tipoBadge(tipo) {{
+      const t = (tipo || '').toUpperCase();
+      if (t.includes('FIJO')) return '<span class="badge badge-fijo">' + esc(tipo) + '</span>';
+      if (t.includes('CIERRE')) return '<span class="badge badge-cierre">' + esc(tipo) + '</span>';
+      if (t.includes('BLACKLIST')) return '<span class="badge badge-blacklist">' + esc(tipo) + '</span>';
+      if (t === '-') return '-';
+      return '<span class="badge badge-tipo">' + esc(tipo) + '</span>';
+    }}
+
+    function estadoBadge(estado) {{
+      return estado === 'ASIGNADO'
+        ? '<span class="badge badge-asignado">ASIGNADO</span>'
+        : '<span class="badge badge-eliminado">ELIMINADO</span>';
+    }}
+
+    function renderRows(rows) {{
+      const tbody = document.getElementById('tableBody');
+      if (!rows.length) {{
+        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:48px;color:var(--text-secondary);font-size:14px">Sin registros para los filtros seleccionados</td></tr>';
+        return;
+      }}
+      let h = '';
+      for (const r of rows) {{
+        h += '<tr>' +
+          '<td style="color:var(--text-secondary)">' + r.id + '</td>' +
+          '<td><strong>' + esc(r.user_label) + '</strong></td>' +
+          '<td><strong style="color:var(--teal)">' + r.contract_id + '</strong></td>' +
+          '<td>' + esc(r.fecha_inicial) + '</td>' +
+          '<td>' + esc(r.fecha_terminal) + '</td>' +
+          '<td>' + tipoBadge(r.tipo) + '</td>' +
+          '<td>' + esc(r.dpd_inicial) + '</td>' +
+          '<td>' + esc(r.dpd_final) + '</td>' +
+          '<td>' + esc(r.dpd_actual) + '</td>' +
+          '<td>' + (r.dias_inicial != null ? r.dias_inicial : '-') + '</td>' +
+          '<td>' + (r.dias_terminal != null ? r.dias_terminal : '-') + '</td>' +
+          '<td>' + esc(r.estado_actual) + '</td>' +
+          '<td>' + estadoBadge(r.estado) + '</td></tr>';
+      }}
+      tbody.innerHTML = h;
+    }}
+
+    function renderPagination(d) {{
+      const pg = document.getElementById('pagination');
+      if (!d.total_rows) {{ pg.innerHTML = ''; return; }}
+      const p = d.page, tp = d.total_pages;
+      let b = '';
+      b += '<button class="page-btn" onclick="goPage(1)"' + (p<=1?' disabled':'') + '>&#171;</button>';
+      b += '<button class="page-btn" onclick="goPage('+(p-1)+')"' + (p<=1?' disabled':'') + '>Ant</button>';
+      const s = Math.max(1, p-3), e = Math.min(tp, p+3);
+      for (let i = s; i <= e; i++) b += '<button class="page-btn'+(i===p?' active':'')+'" onclick="goPage('+i+')">'+i+'</button>';
+      b += '<button class="page-btn" onclick="goPage('+(p+1)+')"' + (p>=tp?' disabled':'') + '>Sig</button>';
+      b += '<button class="page-btn" onclick="goPage('+tp+')"' + (p>=tp?' disabled':'') + '>&#187;</button>';
+      pg.innerHTML = '<span class="page-info"><strong>' + d.rows.length + '</strong> de <strong>' + d.total_rows.toLocaleString() + '</strong> registros</span><div class="page-buttons">' + b + '</div>';
+    }}
+
+    function updateKPIs(d) {{
+      document.getElementById('kpiTotal').textContent = d.total_rows.toLocaleString();
+      document.getElementById('kpiAsignados').textContent = d.asignados.toLocaleString();
+      document.getElementById('kpiEliminados').textContent = d.eliminados.toLocaleString();
+      document.getElementById('kpiSerlefin').textContent = (d.serlefin_asignados || 0).toLocaleString();
+      document.getElementById('kpiCobyser').textContent = (d.cobyser_asignados || 0).toLocaleString();
+      document.getElementById('kpiPage').innerHTML = d.page + '<span style="font-size:14px;color:var(--text-secondary)"> / ' + d.total_pages + '</span>';
+    }}
+
+    function getFilteredRows() {{
+      let rows = state.data.rows;
+      if (state.searchTerm) {{
+        const q = state.searchTerm.toLowerCase();
+        rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
+      }}
+      if (state.sortCol) {{
+        rows = [...rows].sort((a, b) => {{
+          let va = a[state.sortCol], vb = b[state.sortCol];
+          if (va == null) va = ''; if (vb == null) vb = '';
+          if (typeof va === 'number' && typeof vb === 'number') return state.sortDir === 'asc' ? va - vb : vb - va;
+          return state.sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+        }});
+      }}
+      return rows;
+    }}
+
+    function render() {{ renderRows(getFilteredRows()); renderPagination(state.data); updateKPIs(state.data); }}
+
+    function sortBy(col) {{
+      document.querySelectorAll('th').forEach(th => {{ th.classList.remove('sorted'); th.querySelector('.sort-icon').innerHTML = '&#9650;'; }});
+      if (state.sortCol === col) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+      else {{ state.sortCol = col; state.sortDir = 'asc'; }}
+      const th = document.querySelector('th[data-col="'+col+'"]');
+      if (th) {{ th.classList.add('sorted'); th.querySelector('.sort-icon').innerHTML = state.sortDir === 'asc' ? '&#9650;' : '&#9660;'; }}
+      render();
+    }}
+
+    function toggleFilters() {{
+      const t = document.getElementById('filtersToggle');
+      const b = document.getElementById('filtersBody');
+      t.classList.toggle('open');
+      b.style.display = t.classList.contains('open') ? 'grid' : 'none';
+    }}
+
+    async function fetchData(page) {{
+      document.getElementById('loadingOverlay').classList.add('active');
+      const p = new URLSearchParams();
+      p.set('page', page || 1);
+      p.set('page_size', document.getElementById('fPageSize').value);
+      ['fStartDate:start_date','fEndDate:end_date','fMinDays:min_days','fMaxDays:max_days',
+       'fStatus:status','fHouse:house','fUserId:user_id','fContractId:contract_id'].forEach(pair => {{
+        const [id, key] = pair.split(':');
+        const v = document.getElementById(id).value;
+        if (v) p.set(key, v);
+      }});
+      try {{
+        const resp = await fetch(API + '?' + p.toString());
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        state.data = await resp.json();
+        state.sortCol = null; state.sortDir = 'asc'; state.searchTerm = '';
+        document.getElementById('quickSearch').value = '';
+        document.querySelectorAll('th').forEach(th => th.classList.remove('sorted'));
+        render();
+      }} catch (e) {{ alert('Error: ' + e.message); }}
+      document.getElementById('loadingOverlay').classList.remove('active');
+    }}
+
+    function applyFilters() {{ fetchData(1); }}
+    function goPage(p) {{ fetchData(p); }}
+    function clearFilters() {{
+      ['fStartDate','fEndDate','fMinDays','fMaxDays','fUserId','fContractId'].forEach(id => document.getElementById(id).value = '');
+      ['fStatus','fHouse'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('fPageSize').value = '100';
+      fetchData(1);
+    }}
+
+    let st;
+    document.getElementById('quickSearch').addEventListener('input', function() {{
+      clearTimeout(st);
+      st = setTimeout(() => {{ state.searchTerm = this.value.trim(); renderRows(getFilteredRows()); }}, 150);
+    }});
+
+    document.querySelectorAll('.filter-group input, .filter-group select').forEach(el => {{
+      el.addEventListener('keydown', e => {{ if (e.key === 'Enter') applyFilters(); }});
+    }});
+
+    render();
+  </script>
 </body>
 </html>
 """
@@ -1584,7 +2001,6 @@ def _render_assignment_history_report_html(
 
 def _render_panel_html(
     *,
-    panel_hash: str,
     ok_message: str,
     error_message: str,
     current_user: str,
@@ -1622,64 +2038,27 @@ def _render_panel_html(
         )
 
     if not audit_html_rows:
-        audit_html_rows = "<tr><td colspan='7'>Sin cambios registrados aun.</td></tr>"
+        audit_html_rows = "<tr><td colspan='7' style='text-align:center;padding:24px;color:#8b92a5'>Sin cambios registrados aun.</td></tr>"
 
-    action_path = f"/{panel_hash}/save"
-    download_serlefin_path = f"/{panel_hash}/reports/serlefin"
-    download_cobyser_path = f"/{panel_hash}/reports/cobyser"
+    action_path = f"/save"
+    download_serlefin_path = f"/reports/serlefin"
+    download_cobyser_path = f"/reports/cobyser"
     default_start_date = _current_month_start().isoformat()
     default_end_date = datetime.now().date().isoformat()
     assignment_history_path = (
-        f"/{panel_hash}/history/asignados-eliminados"
+        f"/history/asignados-eliminados"
         f"?start_date={default_start_date}&end_date={default_end_date}"
     )
     mora_rotation_path = (
-        f"/{panel_hash}/history/rotacion-mora?start_date={default_start_date}"
+        f"/history/rotacion-mora?start_date={default_start_date}"
     )
-    run_assignment_now_path = f"/{panel_hash}/run-assignment-now"
-    finalize_assignments_path = f"/{panel_hash}/finalize-assignments"
-    validate_db_processes_path = f"/{panel_hash}/validate-db-processes"
-    upload_blacklist_path = f"/{panel_hash}/blacklist/upload"
-    download_blacklist_path = f"/{panel_hash}/blacklist/download"
-    logout_path = f"/{panel_hash}/logout"
+    run_assignment_now_path = f"/run-assignment-now"
+    finalize_assignments_path = f"/finalize-assignments"
+    validate_db_processes_path = f"/validate-db-processes"
+    upload_blacklist_path = f"/blacklist/upload"
+    download_blacklist_path = f"/blacklist/download"
+    logout_path = f"/logout"
     blacklist_status = blacklist_service.status()
-    load_mora_auto_path = f"/{panel_hash}?load_mora_auto=1"
-    mora_auto_block = f"""
-    <section class="table-card">
-      <div class="table-head">Rotacion de Mora Automatica (Cobyser y Serlefin)</div>
-      <div style="padding:12px 14px;color:#5a6673">
-        Vista resumida bajo demanda para evitar demoras al ingresar al panel.
-        <a class="btn btn-link btn-alt" href="{html.escape(load_mora_auto_path)}" style="margin-left:8px">Cargar resumen ahora</a>
-      </div>
-    </section>
-    """
-    if load_mora_auto:
-        try:
-            auto_report = _load_mora_rotation_report(start_date=_current_month_start())
-            auto_cards = _render_mora_panel_cards(auto_report)
-            mora_auto_block = f"""
-            <section class="table-card">
-              <div class="table-head">Rotacion de Mora Automatica (Cobyser y Serlefin)</div>
-              <div class="auto-head">
-                <span>Fecha inicio: <strong>{html.escape(auto_report["start_date_label"])}</strong></span>
-                <span>Asignaciones activas analizadas: <strong>{auto_report["total_rows"]}</strong></span>
-                <span>Actualizacion: <strong>{html.escape(_format_datetime(datetime.now()))}</strong></span>
-              </div>
-              <div class="auto-grid">
-                {auto_cards}
-              </div>
-            </section>
-            """
-        except Exception as error:
-            logger.error("Error cargando vista automatica de rotacion de mora: %s", error)
-            mora_auto_block = (
-                "<section class='table-card'>"
-                "<div class='table-head'>Rotacion de Mora Automatica</div>"
-                "<div style='padding:12px 14px;color:#b42318'>"
-                "No se pudo cargar la rotacion automatica en el panel."
-                "</div>"
-                "</section>"
-            )
 
     return f"""
 <!doctype html>
@@ -1687,377 +2066,256 @@ def _render_panel_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Panel Seguro de Asignacion</title>
+  <title>Panel de Asignacion - Alo Credit</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {{
-      --ink: #131a1f;
-      --muted: #5a6673;
-      --paper: #f7f2e8;
-      --panel: #fffef9;
-      --accent: #046c6f;
-      --accent-soft: #d8f0ed;
-      --danger: #b42318;
-      --danger-soft: #fce7e6;
-      --ok: #0f5132;
-      --ok-soft: #e8f6ee;
-      --line: #d8d2c5;
-      --shadow: 0 16px 40px rgba(12, 20, 26, 0.12);
+      --bg: #F5F5F7;
+      --surface: #FFFFFF;
+      --surface2: #F9F9F9;
+      --border: #E5E7EB;
+      --border-light: #F0F0F0;
+      --text: #3e4a60;
+      --text-secondary: #5A6B8C;
+      --accent: #FF8C42;
+      --accent-hover: #FF7A28;
+      --accent-soft: rgba(255,140,66,0.12);
+      --green: #10B981;
+      --green-soft: #ECFDF5;
+      --red: #EF4444;
+      --red-soft: #FEF2F2;
+      --amber: #F59E0B;
+      --amber-soft: #FFF5ED;
+      --blue: #3B82F6;
+      --blue-soft: #EEF2FF;
+      --teal: #14B8A6;
+      --teal-soft: rgba(20,184,166,0.12);
+      --radius: 12px;
+      --radius-sm: 8px;
     }}
-
-    * {{ box-sizing: border-box; }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      margin: 0;
-      font-family: "Sora", "IBM Plex Sans", "Trebuchet MS", sans-serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 8% 8%, #cff2ec 0, #cff2ec00 48%),
-        radial-gradient(circle at 96% 2%, #fde2cc 0, #fde2cc00 42%),
-        linear-gradient(135deg, #ece5d6 0%, #f8f4ea 100%);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
-      padding: 24px;
+      -webkit-font-smoothing: antialiased;
     }}
 
-    .wrap {{
-      max-width: 1250px;
-      margin: 0 auto;
-      display: grid;
-      gap: 18px;
-    }}
-
-    .hero {{
-      background:
-        radial-gradient(circle at 80% 10%, #ffffff40 0, #ffffff00 45%),
-        linear-gradient(160deg, #0d5f5f, #0b4d5d);
-      color: #fdfdfb;
-      border-radius: 18px;
-      padding: 24px;
-      box-shadow: var(--shadow);
-      animation: enter 360ms ease-out;
-    }}
-
-    .hero h1 {{
-      margin: 0 0 10px;
-      font-size: clamp(1.3rem, 2.2vw, 1.85rem);
-      letter-spacing: 0.02em;
-    }}
-
-    .hero p {{ margin: 0; opacity: 0.94; }}
-    .hero-meta {{
-      margin-top: 12px;
+    .topbar {{
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 56px;
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }}
-    .chip {{
-      display: inline-flex;
       align-items: center;
-      border: 1px solid #ffffff55;
-      padding: 5px 10px;
-      border-radius: 999px;
-      font-size: 0.78rem;
-      background: #ffffff18;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }}
-
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-      gap: 18px;
+    .topbar-brand {{ display: flex; align-items: center; gap: 10px; }}
+    .topbar-brand .logo {{
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, #FF8C42, #FF7A28);
+      border-radius: 8px; display: grid; place-items: center;
+      font-weight: 800; font-size: 14px; color: #fff;
     }}
-
-    .card {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 18px;
-      box-shadow: var(--shadow);
-      animation: enter 420ms ease-out;
+    .topbar h1 {{ font-size: 15px; font-weight: 600; }}
+    .topbar-right {{ display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--text-secondary); }}
+    .topbar-right strong {{ color: var(--text); }}
+    .btn-sm {{
+      font-family: inherit; font-size: 12px; font-weight: 600;
+      padding: 6px 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer; text-decoration: none; transition: all 0.15s;
     }}
+    .btn-sm:hover {{ background: var(--border); }}
+    .btn-danger {{ background: rgba(239,68,68,0.15) !important; border-color: rgba(239,68,68,0.3) !important; color: #fca5a5 !important; }}
 
-    .card h2 {{
-      margin: 0 0 12px;
-      font-size: 0.95rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #1f2a33;
-    }}
-
-    .row {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }}
-
-    label {{
-      display: block;
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }}
-
-    input, textarea {{
-      width: 100%;
-      border: 1px solid #c7c2b7;
-      background: #fffffc;
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 0.95rem;
-      color: var(--ink);
-      outline: none;
-      transition: border-color 180ms ease, box-shadow 180ms ease;
-    }}
-
-    input:focus, textarea:focus {{
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }}
-
-    .btn {{
-      border: 0;
-      border-radius: 11px;
-      padding: 11px 16px;
-      font-size: 0.95rem;
-      font-weight: 700;
-      background: linear-gradient(160deg, #14532d, #0f766e);
-      color: #fff;
-      cursor: pointer;
-      margin-top: 10px;
-    }}
-
-    .btn:hover {{ filter: brightness(1.05); }}
-
-    .btn-link {{
-      display: inline-block;
-      text-decoration: none;
-      text-align: center;
-      margin-right: 8px;
-    }}
-
-    .btn-alt {{
-      background: linear-gradient(165deg, #254b79, #1570a6);
-      margin-top: 0;
-    }}
-    .auditor {{
-      background: #edf6f5;
-      border: 1px solid #c7e5e0;
-      border-radius: 10px;
-      padding: 10px 12px;
-      color: #124240;
-      font-size: 0.86rem;
-      margin-top: 10px;
-    }}
-
-    .meta-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(120px, 1fr));
-      gap: 12px;
-    }}
-
-    .meta-item {{
-      background: #faf8f1;
-      border: 1px solid #e4dece;
-      border-radius: 10px;
-      padding: 10px;
-    }}
-
-    .meta-item .k {{ font-size: 0.75rem; color: var(--muted); text-transform: uppercase; }}
-    .meta-item .v {{ font-size: 1.1rem; font-weight: 700; margin-top: 4px; }}
+    .container {{ max-width: 1300px; margin: 0 auto; padding: 20px 24px; }}
 
     .alert {{
-      border-radius: 12px;
-      padding: 12px 14px;
-      border: 1px solid;
-      font-size: 0.92rem;
-      animation: enter 280ms ease-out;
+      border-radius: var(--radius); padding: 14px 18px;
+      margin-bottom: 16px; font-size: 13px; font-weight: 500;
+      animation: fadeIn 0.3s ease;
     }}
+    .alert.ok {{ background: var(--green-soft); color: var(--green); border: 1px solid rgba(34,197,94,0.2); }}
+    .alert.error {{ background: var(--red-soft); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }}
 
-    .alert.ok {{
-      background: var(--ok-soft);
-      color: var(--ok);
-      border-color: #9fd3b7;
-    }}
-
-    .alert.error {{
-      background: var(--danger-soft);
-      color: var(--danger);
-      border-color: #f4b2ad;
-    }}
-
-    .table-card {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      overflow: hidden;
-      box-shadow: var(--shadow);
-      animation: enter 500ms ease-out;
-    }}
-
-    .table-head {{
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-      background: #f8f6ef;
-      font-weight: 700;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-      font-size: 0.82rem;
-    }}
-
-    .table-wrap {{ overflow-x: auto; }}
-    .auto-head {{
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--line);
-      background: #fbf9f3;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      font-size: 0.84rem;
-      color: #40505e;
-    }}
-    .auto-head span {{
-      padding: 6px 8px;
-      border: 1px solid #ddd5c7;
-      border-radius: 8px;
-      background: #fffef8;
-    }}
-    .auto-grid {{
-      padding: 12px;
+    /* KPI Cards */
+    .kpi-grid {{
       display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 12px;
+      margin-bottom: 20px;
     }}
-    .auto-card {{
-      background: #fffefb;
-      border: 1px solid #ddd5c7;
-      border-radius: 12px;
-      padding: 10px;
+    .kpi-card {{
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 18px;
     }}
-    .auto-card h3 {{
-      margin: 0 0 8px;
-      text-transform: uppercase;
-      font-size: 0.88rem;
-      letter-spacing: 0.03em;
+    .kpi-label {{
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px;
     }}
-    .auto-card h4 {{
-      margin: 10px 0 6px;
-      text-transform: uppercase;
-      font-size: 0.8rem;
-      letter-spacing: 0.03em;
+    .kpi-value {{
+      font-size: 22px; font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }}
-    .auto-kpis {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 8px;
-      font-size: 0.8rem;
-      color: #485968;
-    }}
-    .auto-kpis span {{
-      padding: 5px 8px;
-      border: 1px solid #d9d2c5;
-      border-radius: 8px;
-      background: #faf7ef;
-    }}
-    .auto-card .matrix-wrap,
-    .auto-card .summary-wrap {{
-      overflow-x: auto;
-      border: 1px solid #d9d2c5;
-      border-radius: 8px;
-      background: #fff;
-    }}
-    .auto-card .summary-wrap {{ margin-top: 4px; }}
-    .auto-card .matrix-table {{ min-width: 1260px; }}
-    .auto-card .summary-table {{ min-width: 760px; }}
-    .auto-card .matrix-table th,
-    .auto-card .matrix-table td,
-    .auto-card .summary-table th,
-    .auto-card .summary-table td {{
-      border-bottom: 1px solid #ece7db;
-      border-right: 1px solid #ece7db;
-      text-align: center;
-      padding: 7px 8px;
-      font-size: 0.79rem;
-      vertical-align: middle;
-    }}
-    .auto-card .matrix-table th:first-child,
-    .auto-card .matrix-table td:first-child,
-    .auto-card .summary-table th:first-child,
-    .auto-card .summary-table td:first-child {{
-      text-align: left;
-    }}
-    .auto-card .matrix-table thead th,
-    .auto-card .summary-table thead th {{
-      background: #b7dced;
-      color: #1b2b3a;
-      text-transform: none;
-      font-size: 0.78rem;
-    }}
-    .auto-card .matrix-table tfoot th {{
-      background: #d5e8f2;
-      font-weight: 700;
-      text-transform: none;
-    }}
-    .auto-card .summary-table .total-row td {{
-      background: #efece3;
-      font-weight: 700;
-    }}
-    .auto-card .num {{ font-variant-numeric: tabular-nums; }}
+    .kpi-value.teal {{ color: var(--teal); }}
+    .kpi-value.accent {{ color: var(--accent); }}
+    .kpi-sub {{ font-size: 12px; color: var(--text-secondary); margin-top: 4px; }}
 
-    table {{ width: 100%; border-collapse: collapse; min-width: 900px; }}
+    /* Cards */
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+    .card {{
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+    }}
+    .card h2 {{
+      font-size: 13px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-secondary);
+      margin-bottom: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    }}
+    .form-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }}
+    label {{
+      display: block; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-secondary); margin-bottom: 5px;
+    }}
+    input, textarea, select {{
+      width: 100%; font-family: inherit; font-size: 13px;
+      padding: 9px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      color: var(--text); outline: none; transition: border-color 0.15s;
+    }}
+    input:focus, textarea:focus {{ border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }}
+    textarea {{ resize: vertical; min-height: 60px; }}
 
-    th, td {{
-      border-bottom: 1px solid #ece7db;
-      text-align: left;
-      padding: 10px 12px;
-      font-size: 0.86rem;
-      vertical-align: top;
+    .btn {{
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      padding: 9px 18px; border-radius: var(--radius-sm);
+      border: none; cursor: pointer; transition: all 0.15s;
+      display: inline-block; text-decoration: none; text-align: center;
+      margin-top: 8px; margin-right: 6px;
+    }}
+    .btn-primary {{ background: var(--accent); color: #fff; }}
+    .btn-primary:hover {{ background: var(--accent-hover); }}
+    .btn-secondary {{ background: var(--surface2); color: var(--text); border: 1px solid var(--border); }}
+    .btn-secondary:hover {{ background: var(--border); }}
+    .btn-green {{ background: var(--green); color: #fff; }}
+    .btn-blue {{ background: var(--blue); color: #fff; }}
+    .btn-red {{ background: #dc2626; color: #fff; }}
+    .btn-red:hover {{ background: #ef4444; }}
+    .btn-teal {{ background: var(--teal); color: #fff; }}
+    .btn-block {{ display: block; width: 100%; text-align: center; }}
+
+    .section-divider {{
+      border: none; border-top: 1px solid var(--border);
+      margin: 16px 0;
     }}
 
-    th {{ background: #fcfbf7; color: #38434d; text-transform: uppercase; font-size: 0.75rem; }}
-
-    @keyframes enter {{
-      from {{ opacity: 0; transform: translateY(6px); }}
-      to {{ opacity: 1; transform: translateY(0); }}
+    /* Info badges */
+    .info-row {{
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
     }}
+    .info-chip {{
+      font-size: 12px; padding: 5px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text-secondary);
+    }}
+    .info-chip strong {{ color: var(--text); }}
 
-    @media (max-width: 760px) {{
-      body {{ padding: 14px; }}
-      .row {{ grid-template-columns: 1fr; }}
-      .meta-grid {{ grid-template-columns: 1fr; }}
+    /* Table section */
+    .table-section {{
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; margin-bottom: 20px;
+    }}
+    .table-header {{
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+      font-size: 13px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--text-secondary);
+    }}
+    .table-scroll {{ overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 800px; }}
+    th {{
+      background: var(--surface2); color: var(--text-secondary);
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; padding: 10px 14px; text-align: left;
+      border-bottom: 1px solid var(--border);
+    }}
+    td {{
+      padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }}
+    tbody tr:hover {{ background: var(--surface2); }}
+
+    @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(-4px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+    @media (max-width: 900px) {{
+      .container {{ padding: 12px; }}
+      .grid {{ grid-template-columns: 1fr; }}
+      .form-row {{ grid-template-columns: 1fr; }}
+      .kpi-grid {{ grid-template-columns: repeat(2, 1fr); }}
     }}
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="hero">
-      <h1>Panel Seguro de Parametros de Asignacion</h1>
-      <p>URL protegida por hash. Todo cambio queda auditado y notificado al auditor.</p>
-      <div class="hero-meta">
-        <span class="chip">Hash activo: /{html.escape(panel_hash)}</span>
-        <span class="chip">Auditor: {html.escape(AUDITOR_EMAIL)}</span>
-        <span class="chip">Sesion: {html.escape(current_user)}</span>
-        <form method="post" action="{html.escape(logout_path)}" style="display:inline-block;margin:0">
-          <button class="btn btn-alt" type="submit" style="margin:0;padding:6px 10px;font-size:.78rem;border-radius:999px">Salir</button>
-        </form>
-      </div>
-    </section>
+  <nav class="topbar">
+    <div class="topbar-brand">
+      <div class="logo">A</div>
+      <h1>Panel de Asignacion</h1>
+    </div>
+    <div class="topbar-right" style="display:flex;gap:8px;align-items:center">
+      <a href="/dashboard" style="font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);text-decoration:none">Dashboard</a>
+      <a href="{html.escape(assignment_history_path)}" style="font-family:inherit;font-size:13px;font-weight:500;padding:7px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);text-decoration:none">Historial</a>
+      <span style="font-size:12px;color:var(--text-secondary)">Sesion: <strong>{html.escape(current_user)}</strong></span>
+      <form method="post" action="{html.escape(logout_path)}" style="display:inline">
+        <button class="btn-sm btn-danger" type="submit">Salir</button>
+      </form>
+    </div>
+  </nav>
 
+  <div class="container">
     {message_block}
 
-    <section class="grid">
-      <article class="card">
-        <h2>Configuracion activa</h2>
-        <div class="meta-grid">
-          <div class="meta-item"><div class="k">Serlefin %</div><div class="v">{config.serlefin_percent:.2f}</div></div>
-          <div class="meta-item"><div class="k">Cobyser %</div><div class="v">{config.cobyser_percent:.2f}</div></div>
-          <div class="meta-item"><div class="k">Rango minimo</div><div class="v">{int(config.min_days)}</div></div>
-          <div class="meta-item"><div class="k">Rango maximo</div><div class="v">{int(config.max_days)}</div></div>
-          <div class="meta-item"><div class="k">Actualizado por</div><div class="v" style="font-size:.9rem">{html.escape(config.updated_by)}</div></div>
-          <div class="meta-item"><div class="k">Fecha update</div><div class="v" style="font-size:.9rem">{html.escape(_format_datetime(config.updated_at))}</div></div>
-        </div>
-      </article>
+    <!-- KPIs -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Serlefin %</div>
+        <div class="kpi-value teal">{config.serlefin_percent:.2f}%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Cobyser %</div>
+        <div class="kpi-value accent">{config.cobyser_percent:.2f}%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Rango Minimo</div>
+        <div class="kpi-value">{int(config.min_days)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Rango Maximo</div>
+        <div class="kpi-value">{int(config.max_days)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Actualizado por</div>
+        <div class="kpi-sub" style="font-size:13px;margin-top:8px"><strong>{html.escape(config.updated_by)}</strong></div>
+        <div class="kpi-sub">{html.escape(_format_datetime(config.updated_at))}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Blacklist</div>
+        <div class="kpi-value" style="font-size:18px">{int(blacklist_status["contracts_loaded"])}</div>
+        <div class="kpi-sub">contratos bloqueados</div>
+      </div>
+    </div>
 
-      <article class="card">
-        <h2>Actualizar parametros</h2>
+    <!-- Main Grid -->
+    <div class="grid">
+      <!-- Config Form -->
+      <div class="card">
+        <h2>Actualizar Parametros</h2>
         <form method="post" action="{html.escape(action_path)}">
-          <div class="row">
+          <div class="form-row">
             <div>
               <label for="serlefin_percent">Porcentaje Serlefin (%)</label>
               <input id="serlefin_percent" name="serlefin_percent" type="number" step="0.01" min="0" max="100" value="{config.serlefin_percent:.2f}" required />
@@ -2067,8 +2325,7 @@ def _render_panel_html(
               <input id="cobyser_percent" name="cobyser_percent" type="number" step="0.01" min="0" max="100" value="{config.cobyser_percent:.2f}" required />
             </div>
           </div>
-
-          <div class="row" style="margin-top:10px">
+          <div class="form-row">
             <div>
               <label for="min_days">Rango minimo de atraso</label>
               <input id="min_days" name="min_days" type="number" min="{int(settings.DAYS_THRESHOLD)}" value="{int(config.min_days)}" required />
@@ -2078,36 +2335,30 @@ def _render_panel_html(
               <input id="max_days" name="max_days" type="number" min="0" value="{int(config.max_days)}" required />
             </div>
           </div>
-
-          <div style="margin-top:10px">
-            <label>Actor de auditoria (fijo)</label>
-            <input type="email" value="{html.escape(AUDITOR_EMAIL)}" readonly />
+          <div style="margin-bottom:12px">
+            <label for="reason">Motivo del cambio</label>
+            <textarea id="reason" name="reason" rows="2" placeholder="Ej: ajustar meta operativa de la semana"></textarea>
           </div>
-
-          <div style="margin-top:10px">
-            <label for="reason">Motivo del cambio (opcional)</label>
-            <textarea id="reason" name="reason" rows="3" placeholder="Ej: ajustar meta operativa de la semana"></textarea>
-          </div>
-
-          <button class="btn" type="submit">Guardar cambios auditados</button>
+          <button class="btn btn-primary btn-block" type="submit">Guardar Cambios</button>
         </form>
-      </article>
+      </div>
 
-      <article class="card">
-        <h2>Descarga de Informes</h2>
-        <p style="margin-top:0;color:#5a6673">
-          Descarga directa de Excel para cada casa de cobranza.
-        </p>
-        <div class="auditor">
-          Cada cambio de configuracion se notifica automaticamente a <strong>{html.escape(AUDITOR_EMAIL)}</strong>.
-        </div>
-        <br />
-        <a class="btn btn-link btn-alt" href="{html.escape(download_serlefin_path)}">Descargar Serlefin</a>
-        <a class="btn btn-link btn-alt" href="{html.escape(download_cobyser_path)}">Descargar Cobyser</a>
-        <a class="btn btn-link" href="{html.escape(assignment_history_path)}">Ver Asignados/Eliminados (mes actual)</a>
-        <a class="btn btn-link" href="{html.escape(mora_rotation_path)}">Ver Rotacion de Mora (Cobyser y Serlefin)</a>
-        <form method="get" action="/{html.escape(panel_hash)}/history/asignados-eliminados" style="margin-top:10px">
-          <div class="row">
+      <!-- Actions Card -->
+      <div class="card">
+        <h2>Informes y Descargas</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Contratos activos (si hay) o del ultimo ciclo historico</p>
+        <a class="btn btn-brand" href="{html.escape(download_serlefin_path)}">Serlefin Excel</a>
+        <a class="btn btn-secondary" href="{html.escape(download_cobyser_path)}">Cobyser Excel</a>
+        <br/>
+        <p style="font-size:12px;color:var(--text-muted);margin-top:10px;margin-bottom:6px">Forzar descarga desde historico completo</p>
+        <a class="btn btn-secondary" href="{html.escape(download_serlefin_path)}?source=history">Serlefin (Historico)</a>
+        <a class="btn btn-secondary" href="{html.escape(download_cobyser_path)}?source=history">Cobyser (Historico)</a>
+        <br/>
+        <a class="btn btn-blue" style="margin-top:10px" href="{html.escape(assignment_history_path)}">Historial Asignados/Eliminados</a>
+        <a class="btn btn-secondary" href="{html.escape(mora_rotation_path)}">Rotacion de Mora</a>
+
+        <form method="get" action="/history/asignados-eliminados" style="margin-top:14px">
+          <div class="form-row">
             <div>
               <label for="hist_start_date">Inicio</label>
               <input id="hist_start_date" name="start_date" type="date" value="{html.escape(default_start_date)}" />
@@ -2117,70 +2368,48 @@ def _render_panel_html(
               <input id="hist_end_date" name="end_date" type="date" value="{html.escape(default_end_date)}" />
             </div>
           </div>
-          <div class="row" style="margin-top:10px">
-            <div>
-              <label for="hist_min_days">Dias min</label>
-              <input id="hist_min_days" name="min_days" type="number" min="0" placeholder="Ej: 61" />
-            </div>
-            <div>
-              <label for="hist_max_days">Dias max</label>
-              <input id="hist_max_days" name="max_days" type="number" min="0" placeholder="Ej: 240" />
-            </div>
-          </div>
-          <button class="btn btn-alt" type="submit">Filtrar historial</button>
+          <button class="btn btn-secondary" type="submit">Filtrar historial</button>
         </form>
 
-        <hr style="margin:16px 0;border:none;border-top:1px solid #ece7db" />
-        <h2 style="margin-top:0">Lista Negra</h2>
-        <p style="margin-top:0;color:#5a6673">
-          Sube un TXT con contratos bloqueados. Nunca se asignaran.
-        </p>
-        <p style="margin-top:0;color:#5a6673;font-size:.86rem">
-          Archivo: <strong>{html.escape(blacklist_status["path"])}</strong> |
-          Cargados: <strong>{int(blacklist_status["contracts_loaded"])}</strong>
-        </p>
-        <a class="btn btn-link btn-alt" href="{html.escape(download_blacklist_path)}">Descargar TXT lista negra</a>
-        <form method="post" action="{html.escape(upload_blacklist_path)}" enctype="multipart/form-data">
-          <input type="file" name="blacklist_file" accept=".txt,text/plain" required />
-          <button class="btn btn-alt" type="submit">Subir TXT lista negra</button>
+        <hr class="section-divider" />
+        <h2 style="border:none;padding:0;margin-bottom:10px">Lista Negra</h2>
+        <div class="info-row">
+          <span class="info-chip">Archivo: <strong>{html.escape(blacklist_status["path"])}</strong></span>
+          <span class="info-chip">Cargados: <strong>{int(blacklist_status["contracts_loaded"])}</strong></span>
+        </div>
+        <a class="btn btn-secondary" href="{html.escape(download_blacklist_path)}">Descargar TXT</a>
+        <form method="post" action="{html.escape(upload_blacklist_path)}" enctype="multipart/form-data" style="margin-top:8px">
+          <input type="file" name="blacklist_file" accept=".txt,text/plain" required style="margin-bottom:6px" />
+          <button class="btn btn-secondary" type="submit">Subir TXT</button>
         </form>
 
-        <hr style="margin:16px 0;border:none;border-top:1px solid #ece7db" />
-        <h2 style="margin-top:0">Cierre Masivo</h2>
-        <form method="post" action="{html.escape(run_assignment_now_path)}">
-          <button class="btn" type="submit">Ejecutar asignacion ahora</button>
+        <hr class="section-divider" />
+        <h2 style="border:none;padding:0;margin-bottom:10px">Acciones</h2>
+        <form method="post" action="{html.escape(run_assignment_now_path)}" style="display:inline">
+          <button class="btn btn-green" type="submit">Ejecutar Asignacion</button>
         </form>
-        <p style="margin-top:0;color:#5a6673">
-          Lanza el endpoint de asignacion (rango configurado, balance 60/40 y validacion de lista negra).
-        </p>
-        <form method="post" action="{html.escape(validate_db_processes_path)}">
-          <button class="btn btn-alt" type="submit">Validar procesos BD</button>
+        <form method="post" action="{html.escape(validate_db_processes_path)}" style="display:inline">
+          <button class="btn btn-secondary" type="submit">Validar BD</button>
         </form>
-        <p style="margin:8px 0 0;color:#5a6673;font-size:.86rem">
-          Esta validacion ejecuta 1 consulta a alocreditprod y 1 consulta a PostgreSQL.
-        </p>
-        <form method="post" action="{html.escape(finalize_assignments_path)}">
-          <button class="btn" type="submit" style="background:#8a1f1f">Ejecutar cierre masivo</button>
+        <form method="post" action="{html.escape(finalize_assignments_path)}" style="display:inline"
+              onsubmit="return confirm('Esto ejecutara el cierre masivo. Confirmar?')">
+          <button class="btn btn-red" type="submit">Cierre Masivo</button>
         </form>
-        <p style="margin-top:8px;color:#7a2d2d">
-          Cierra historial activo y deja vacia la tabla contract_advisors.
-        </p>
-      </article>
-    </section>
+      </div>
+    </div>
 
-    {mora_auto_block}
-
-    <section class="table-card">
-      <div class="table-head">Historico de cambios</div>
-      <div class="table-wrap">
+    <!-- Audit Table -->
+    <div class="table-section">
+      <div class="table-header">Historico de Cambios de Configuracion</div>
+      <div class="table-scroll">
         <table>
           <thead>
             <tr>
               <th>Fecha</th>
               <th>Actor</th>
               <th>Campo</th>
-              <th>Valor anterior</th>
-              <th>Valor nuevo</th>
+              <th>Anterior</th>
+              <th>Nuevo</th>
               <th>Motivo</th>
               <th>IP</th>
             </tr>
@@ -2190,11 +2419,613 @@ def _render_panel_html(
           </tbody>
         </table>
       </div>
-    </section>
-  </main>
+    </div>
+  </div>
 </body>
 </html>
 """
+
+
+def _load_dashboard_data(start_date: Optional[date] = None, end_date: Optional[date] = None) -> dict:
+    """Load all dashboard metrics from PostgreSQL in a single connection."""
+    conn = psycopg2.connect(
+        host=settings.POSTGRES_HOST,
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        dbname=settings.POSTGRES_DATABASE,
+        port=settings.POSTGRES_PORT,
+    )
+
+    # Build date filter
+    date_where = ""
+    date_where_and = ""
+    date_params: dict[str, object] = {}
+    if start_date:
+        date_where += ' AND "Fecha Inicial"::date >= %(d_start)s'
+        date_params["d_start"] = start_date
+    if end_date:
+        date_where += ' AND "Fecha Inicial"::date <= %(d_end)s'
+        date_params["d_end"] = end_date
+    if date_where:
+        date_where_and = " WHERE 1=1" + date_where
+        date_where_having = date_where  # for queries that already have WHERE
+    else:
+        date_where_and = ""
+        date_where_having = ""
+
+    serlefin_ids = ",".join(str(int(u)) for u in sorted(HOUSE_USER_IDS.get("serlefin", set())))
+    cobyser_ids = ",".join(str(int(u)) for u in sorted(HOUSE_USER_IDS.get("cobyser", set())))
+
+    try:
+        with conn.cursor() as cur:
+            # 1. Overview KPIs
+            cur.execute(f"""
+                SELECT
+                    COUNT(*)::bigint AS total,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NULL)::bigint AS asignados,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NOT NULL)::bigint AS eliminados,
+                    MIN("Fecha Inicial")::date AS fecha_min,
+                    MAX("Fecha Inicial")::date AS fecha_max,
+                    COUNT(DISTINCT contract_id)::bigint AS contratos_unicos,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NULL AND user_id IN ({serlefin_ids}))::bigint AS serlefin_asignados,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NULL AND user_id IN ({cobyser_ids}))::bigint AS cobyser_asignados
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+            """, date_params)
+            overview = cur.fetchone()
+
+            # 2. By user_id
+            cur.execute(f"""
+                SELECT user_id, COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+                GROUP BY user_id ORDER BY cnt DESC
+            """, date_params)
+            by_user = cur.fetchall()
+
+            # 3. By tipo
+            cur.execute(f"""
+                SELECT COALESCE(tipo, 'SIN_TIPO') AS tipo, COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+                GROUP BY tipo ORDER BY cnt DESC
+            """, date_params)
+            by_tipo = cur.fetchall()
+
+            # 4. By DPD inicial
+            cur.execute(f"""
+                SELECT COALESCE(dpd_inicial, 'SIN_DPD') AS dpd, COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+                GROUP BY dpd_inicial ORDER BY cnt DESC
+            """, date_params)
+            by_dpd = cur.fetchall()
+
+            # 5. By estado_actual
+            cur.execute(f"""
+                SELECT COALESCE(NULLIF(TRIM(estado_actual::text), ''), 'SIN_ESTADO') AS estado,
+                       COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+                GROUP BY estado ORDER BY cnt DESC
+            """, date_params)
+            by_estado = cur.fetchall()
+
+            # 6. Daily volume (Fecha Inicial by date)
+            cur.execute(f"""
+                SELECT "Fecha Inicial"::date AS dia, COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE "Fecha Inicial" IS NOT NULL {date_where}
+                GROUP BY dia ORDER BY dia
+            """, date_params)
+            daily_volume = cur.fetchall()
+
+            # 7. Average dias atraso
+            cur.execute(f"""
+                SELECT
+                    AVG(CASE WHEN NULLIF(TRIM(dias_atraso_incial::text), '') ~ '^-?\d+$'
+                        THEN TRIM(dias_atraso_incial::text)::numeric ELSE NULL END)::numeric(10,2) AS avg_inicial,
+                    AVG(CASE WHEN NULLIF(TRIM(dias_atraso_terminal::text), '') ~ '^-?\d+$'
+                        THEN TRIM(dias_atraso_terminal::text)::numeric ELSE NULL END)::numeric(10,2) AS avg_terminal
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+            """, date_params)
+            avg_dias = cur.fetchone()
+
+            # 8. Monthly breakdown
+            cur.execute(f"""
+                SELECT
+                    TO_CHAR("Fecha Inicial", 'YYYY-MM') AS mes,
+                    COUNT(*)::bigint AS total,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NULL)::bigint AS asignados,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NOT NULL)::bigint AS eliminados
+                FROM alocreditindicators.contract_advisors_history
+                WHERE "Fecha Inicial" IS NOT NULL {date_where}
+                GROUP BY mes ORDER BY mes
+            """, date_params)
+            monthly = cur.fetchall()
+
+            # 9. DPD migration (initial vs terminal comparison)
+            cur.execute(f"""
+                SELECT
+                    COALESCE(dpd_inicial, 'SIN_DPD') AS dpd_ini,
+                    COALESCE(dpd_final, 'SIN_DPD') AS dpd_fin,
+                    COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE dpd_inicial IS NOT NULL AND dpd_final IS NOT NULL {date_where}
+                GROUP BY dpd_ini, dpd_fin
+                ORDER BY cnt DESC
+                LIMIT 20
+            """, date_params)
+            dpd_migration = cur.fetchall()
+
+            # 10. Active promises
+            cur.execute("""
+                SELECT COUNT(*)::bigint
+                FROM alocreditindicators.managements
+                WHERE promise_date IS NOT NULL AND promise_date >= CURRENT_DATE
+            """)
+            active_promises = cur.fetchone()[0]
+
+            # 11. DPD terminal distribution for comparison
+            cur.execute(f"""
+                SELECT COALESCE(dpd_final, 'SIN_DPD') AS dpd, COUNT(*)::bigint AS cnt
+                FROM alocreditindicators.contract_advisors_history
+                WHERE dpd_final IS NOT NULL {date_where}
+                GROUP BY dpd_final ORDER BY cnt DESC
+            """, date_params)
+            by_dpd_terminal = cur.fetchall()
+
+            # 12. User split by house with percentages
+            cur.execute(f"""
+                SELECT user_id,
+                    COUNT(*)::bigint AS total,
+                    COUNT(*) FILTER (WHERE "Fecha Terminal" IS NOT NULL)::bigint AS cerrados
+                FROM alocreditindicators.contract_advisors_history
+                WHERE 1=1 {date_where}
+                GROUP BY user_id ORDER BY total DESC
+            """, date_params)
+            user_detail = cur.fetchall()
+
+            # 13. Ultimos asignados (last 50 assignments)
+            cur.execute(f"""
+                SELECT
+                    h.id, h.user_id, h.contract_id,
+                    h."Fecha Inicial" AS fecha_inicial,
+                    h."Fecha Terminal" AS fecha_terminal,
+                    h.tipo, h.dpd_inicial, h.dpd_actual,
+                    h.dias_atraso_incial,
+                    COALESCE(NULLIF(TRIM(h.estado_actual::text), ''), 'SIN_ESTADO') AS estado_actual,
+                    CASE WHEN h."Fecha Terminal" IS NULL THEN 'ASIGNADO' ELSE 'ELIMINADO' END AS estado
+                FROM alocreditindicators.contract_advisors_history h
+                WHERE 1=1 {date_where}
+                ORDER BY h."Fecha Inicial" DESC, h.id DESC
+                LIMIT 50
+            """, date_params)
+            latest_rows = cur.fetchall()
+
+    finally:
+        conn.close()
+
+    return {
+        "overview": {
+            "total": int(overview[0] or 0),
+            "asignados": int(overview[1] or 0),
+            "eliminados": int(overview[2] or 0),
+            "fecha_min": str(overview[3] or "-"),
+            "fecha_max": str(overview[4] or "-"),
+            "contratos_unicos": int(overview[5] or 0),
+            "serlefin_asignados": int(overview[6] or 0),
+            "cobyser_asignados": int(overview[7] or 0),
+        },
+        "by_user": [{"user_id": r[0], "label": _format_user_label(r[0]), "count": int(r[1])} for r in by_user],
+        "by_tipo": [{"tipo": r[0], "count": int(r[1])} for r in by_tipo],
+        "by_dpd_inicial": [{"dpd": r[0], "count": int(r[1])} for r in by_dpd],
+        "by_dpd_terminal": [{"dpd": r[0], "count": int(r[1])} for r in by_dpd_terminal],
+        "by_estado": [{"estado": r[0], "count": int(r[1])} for r in by_estado],
+        "daily_volume": [{"date": str(r[0]), "count": int(r[1])} for r in daily_volume],
+        "avg_dias": {
+            "inicial": float(avg_dias[0] or 0),
+            "terminal": float(avg_dias[1] or 0),
+        },
+        "monthly": [{"mes": r[0], "total": int(r[1]), "asignados": int(r[2]), "eliminados": int(r[3])} for r in monthly],
+        "dpd_migration": [{"from": r[0], "to": r[1], "count": int(r[2])} for r in dpd_migration],
+        "active_promises": int(active_promises or 0),
+        "user_detail": [{"user_id": r[0], "label": _format_user_label(r[0]), "total": int(r[1]), "cerrados": int(r[2])} for r in user_detail],
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+        "latest": [{
+            "id": r[0], "user_id": r[1], "user_label": _format_user_label(r[1]),
+            "contract_id": r[2], "fecha_inicial": _format_datetime(r[3]),
+            "fecha_terminal": _format_datetime(r[4]), "tipo": str(r[5] or "-"),
+            "dpd_inicial": str(r[6] or "-"), "dpd_actual": str(r[7] or "-"),
+            "dias_inicial": r[8], "estado_actual": str(r[9] or "-"), "estado": r[10],
+        } for r in latest_rows],
+    }
+
+
+def _render_dashboard_html(data: dict) -> str:
+    """Render dashboard with Alo Credit branding and Chart.js."""
+    import json as _json
+
+    config_path = f"/config"
+    default_start = data.get("start_date") or _current_month_start().isoformat()
+    default_end = data.get("end_date") or datetime.now().date().isoformat()
+    hist_path = f"/history/asignados-eliminados?start_date={default_start}&end_date={default_end}"
+    logout_path = f"/logout"
+    ov = data["overview"]
+    avg = data["avg_dias"]
+    data_json = _json.dumps(data)
+    delta = avg["terminal"] - avg["inicial"]
+    delta_color = "var(--red)" if delta > 0 else "var(--green)"
+    delta_sign = "+" if delta >= 0 else ""
+
+    # Build HTML parts separately to avoid f-string brace issues with CSS
+    css = """
+    :root {
+      --brand: #FF8C42; --brand-hover: #FF7A28; --brand-light: #FFF5ED;
+      --bg: #F5F5F7; --surface: #FFFFFF; --surface2: #F9F9F9;
+      --border: #E5E7EB; --border-light: #F0F0F0;
+      --text: #3e4a60; --text-secondary: #5A6B8C; --text-muted: #7A7A7A;
+      --green: #10B981; --red: #EF4444; --blue: #3B82F6;
+      --amber: #F59E0B; --purple: #8B5CF6; --teal: #14B8A6;
+      --radius: 14px; --radius-sm: 10px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+      --shadow-lg: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+    .topbar-brand { display: flex; align-items: center; gap: 10px; }
+    .topbar-brand .logo { width: 32px; height: 32px; background: linear-gradient(135deg, #FF8C42, #FF7A28); border-radius: 10px; display: grid; place-items: center; font-weight: 800; font-size: 15px; color: #fff; }
+    .topbar h1 { font-size: 15px; font-weight: 700; color: var(--text); }
+    .topbar-right { display: flex; gap: 8px; align-items: center; }
+    .nav-link { font-family: inherit; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none; cursor: pointer; transition: all 0.15s; }
+    .nav-link:hover { background: var(--surface2); }
+    .nav-link.active { background: #FF8C42; color: #fff; border-color: #FF8C42; }
+    .container { max-width: 1500px; margin: 0 auto; padding: 20px 24px; }
+    .date-bar { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; box-shadow: var(--shadow); }
+    .date-bar label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+    .date-bar input[type=date] { font-family: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface2); color: var(--text); outline: none; }
+    .date-bar input[type=date]:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(255,140,66,0.15); }
+    .date-bar .btn-refresh { font-family: inherit; font-size: 13px; font-weight: 600; padding: 7px 18px; border: none; border-radius: var(--radius-sm); background: var(--brand); color: #fff; cursor: pointer; transition: background 0.15s; }
+    .date-bar .btn-refresh:hover { background: var(--brand-hover); }
+    .date-bar .btn-refresh:disabled { opacity: 0.6; cursor: wait; }
+    .date-bar .spinner-sm { display: none; width: 16px; height: 16px; border: 2px solid #fff3; border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+    .date-bar .loading .spinner-sm { display: inline-block; }
+    .kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+    .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); transition: transform 0.15s, box-shadow 0.15s; cursor: default; }
+    .kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+    .kpi.clickable { cursor: pointer; }
+    .kpi.clickable:hover { border-color: var(--brand); }
+    .kpi-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-secondary); margin-bottom: 8px; }
+    .kpi-num { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1; }
+    .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px; }
+    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); }
+    .chart-card.full { grid-column: 1 / -1; }
+    .chart-card h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); margin-bottom: 16px; }
+    .chart-wrap { position: relative; width: 100%; height: 280px; }
+    .chart-wrap.tall { height: 320px; }
+    .flow-list { list-style: none; }
+    .flow-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border-light); font-size: 13px; }
+    .flow-from { color: #FF8C42; font-weight: 700; min-width: 70px; text-align: right; }
+    .flow-arrow { color: var(--text-muted); }
+    .flow-to { color: var(--teal); font-weight: 700; min-width: 70px; }
+    .flow-count { color: var(--text-secondary); margin-left: auto; font-variant-numeric: tabular-nums; }
+    .mini-table { width: 100%; border-collapse: collapse; }
+    .mini-table th { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    .mini-table td { font-size: 13px; padding: 7px 8px; border-bottom: 1px solid var(--border-light); font-variant-numeric: tabular-nums; }
+    .mini-table tbody tr:hover { background: var(--surface2); }
+    .bar-fill { height: 6px; border-radius: 3px; display: inline-block; }
+    .latest-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 20px; overflow: hidden; }
+    .latest-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+    .latest-header h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin: 0; }
+    .latest-search { font-family: inherit; font-size: 13px; padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface2); color: var(--text); outline: none; width: 260px; }
+    .latest-search:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(255,140,66,0.15); }
+    .latest-scroll { overflow-x: auto; max-height: 480px; overflow-y: auto; }
+    .latest-table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    .latest-table thead { position: sticky; top: 0; z-index: 5; }
+    .latest-table th { background: var(--surface2); color: var(--text-secondary); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none; }
+    .latest-table th:hover { color: var(--text); }
+    .latest-table th.sorted { color: var(--brand); }
+    .latest-table td { padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--border-light); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .latest-table tbody tr { transition: background 0.1s; }
+    .latest-table tbody tr:hover { background: var(--surface2); }
+    .badge-sm { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
+    .badge-asig { background: #ECFDF5; color: #10B981; }
+    .badge-elim { background: #FEF2F2; color: #EF4444; }
+    .ver-mas-row { text-align: center; padding: 14px; }
+    .ver-mas-row a { color: var(--brand); font-weight: 600; font-size: 13px; text-decoration: none; }
+    .ver-mas-row a:hover { text-decoration: underline; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } .kpi-row { grid-template-columns: repeat(2, 1fr); } .date-bar { flex-direction: column; align-items: stretch; } }
+    """
+
+    js = """
+    const P=['#FF8C42','#3B82F6','#10B981','#F59E0B','#EF4444','#8B5CF6','#14B8A6','#EC4899','#06B6D4','#84CC16','#F97316','#64748B'];
+    const O=['0','1_3','4_15','16_30','31_45','46_60','61_90','91_120','121_150','151_180','181_209','210_MAS','SIN_DPD'];
+    Chart.defaults.color='#5A6B8C';Chart.defaults.borderColor='#E5E7EB';Chart.defaults.font.family="'Inter',sans-serif";
+
+    let charts = {};
+    function initCharts() {
+      Object.values(charts).forEach(c => c.destroy());
+      charts = {};
+
+      charts.cD = new Chart(document.getElementById('cD'),{type:'line',data:{labels:D.daily_volume.map(d=>d.date),datasets:[{label:'Asignaciones',data:D.daily_volume.map(d=>d.count),borderColor:'#FF8C42',backgroundColor:'rgba(255,140,66,0.08)',fill:true,tension:.35,pointRadius:3,pointBackgroundColor:'#FF8C42'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{maxRotation:45,font:{size:10}}},y:{beginAtZero:true}}}});
+
+      const m={};D.by_dpd_inicial.forEach(d=>m[d.dpd]=d.count);const l=O.filter(k=>m[k]);
+      charts.cDPD = new Chart(document.getElementById('cDPD'),{type:'bar',data:{labels:l,datasets:[{data:l.map(k=>m[k]||0),backgroundColor:P.slice(0,l.length),borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{beginAtZero:true}}}});
+
+      charts.cU = new Chart(document.getElementById('cU'),{type:'doughnut',data:{labels:D.by_user.map(u=>u.label),datasets:[{data:D.by_user.map(u=>u.count),backgroundColor:['#FF8C42','#3B82F6','#10B981','#8B5CF6'],borderColor:'#fff',borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'bottom',labels:{padding:16,usePointStyle:true}},tooltip:{callbacks:{label:c=>c.label+': '+c.parsed.toLocaleString()+' ('+(c.parsed/D.overview.total*100).toFixed(1)+'%)'}}}}});
+
+      const t=D.by_estado.slice(0,8);
+      charts.cE = new Chart(document.getElementById('cE'),{type:'bar',data:{labels:t.map(e=>e.estado),datasets:[{data:t.map(e=>e.count),backgroundColor:P.slice(0,t.length),borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true},y:{grid:{display:false}}}}});
+
+      charts.cT = new Chart(document.getElementById('cT'),{type:'doughnut',data:{labels:D.by_tipo.map(t=>t.tipo),datasets:[{data:D.by_tipo.map(t=>t.count),backgroundColor:['#EF4444','#F59E0B','#3B82F6','#10B981','#8B5CF6','#14B8A6','#EC4899'],borderColor:'#fff',borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,cutout:'55%',plugins:{legend:{position:'bottom',labels:{padding:12,usePointStyle:true}}}}});
+
+      const im={},tm={};D.by_dpd_inicial.forEach(d=>im[d.dpd]=d.count);D.by_dpd_terminal.forEach(d=>tm[d.dpd]=d.count);const lc=O.filter(k=>(im[k]||0)+(tm[k]||0)>0);
+      charts.cC = new Chart(document.getElementById('cC'),{type:'bar',data:{labels:lc,datasets:[{label:'DPD Inicial',data:lc.map(k=>im[k]||0),backgroundColor:'rgba(255,140,66,0.7)',borderRadius:4},{label:'DPD Terminal',data:lc.map(k=>tm[k]||0),backgroundColor:'rgba(20,184,166,0.7)',borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{usePointStyle:true}}},scales:{x:{grid:{display:false}},y:{beginAtZero:true}}}});
+
+      // Flow list
+      const fl=document.getElementById('fL'); fl.innerHTML='';
+      D.dpd_migration.slice(0,15).forEach(f=>{const i=document.createElement('li');i.className='flow-item';i.innerHTML='<span class="flow-from">'+f.from+'</span><span class="flow-arrow">&#10132;</span><span class="flow-to">'+f.to+'</span><span class="flow-count">'+f.count.toLocaleString()+'</span>';fl.appendChild(i);});
+
+      // User detail table
+      const ut=document.getElementById('uT'); ut.innerHTML='';
+      const mx=Math.max(...D.user_detail.map(u=>u.total),1);
+      D.user_detail.forEach((u,i)=>{const r=document.createElement('tr');r.innerHTML='<td><strong>'+u.label+'</strong></td><td>'+u.total.toLocaleString()+'</td><td>'+u.cerrados.toLocaleString()+'</td><td>'+(u.total>0?(u.cerrados/u.total*100).toFixed(1):'0')+'%</td><td><div class="bar-fill" style="width:'+(u.total/mx*100)+'%;background:'+P[i%P.length]+'"></div></td>';ut.appendChild(r);});
+    }
+
+    function updateKPIs() {
+      const o = D.overview;
+      document.getElementById('kTotal').textContent = o.total.toLocaleString();
+      document.getElementById('kUnicos').textContent = o.contratos_unicos.toLocaleString();
+      document.getElementById('kAsignados').textContent = o.asignados.toLocaleString();
+      document.getElementById('kEliminados').textContent = o.eliminados.toLocaleString();
+      document.getElementById('kSerlefin').textContent = (o.serlefin_asignados||0).toLocaleString();
+      document.getElementById('kCobyser').textContent = (o.cobyser_asignados||0).toLocaleString();
+      document.getElementById('kPromesas').textContent = D.active_promises.toLocaleString();
+      document.getElementById('kAvgIni').textContent = Math.round(D.avg_dias.inicial);
+      document.getElementById('kAvgTerm').textContent = Math.round(D.avg_dias.terminal);
+      const dd = D.avg_dias.terminal - D.avg_dias.inicial;
+      const de = document.getElementById('kDelta');
+      de.textContent = (dd>=0?'+':'')+Math.round(dd)+'d';
+      de.style.color = dd > 0 ? 'var(--red)' : 'var(--green)';
+      document.getElementById('kRange').textContent = (o.fecha_min||'-')+' a '+(o.fecha_max||'-');
+    }
+
+    // Latest assignments table
+    let latestSort = {col: null, dir: 'asc'};
+    function renderLatest(searchTerm) {
+      let rows = D.latest || [];
+      if (searchTerm) {
+        const q = searchTerm.toLowerCase();
+        rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)));
+      }
+      if (latestSort.col) {
+        rows = [...rows].sort((a,b) => {
+          let va=a[latestSort.col], vb=b[latestSort.col];
+          if (va==null) va=''; if (vb==null) vb='';
+          if (typeof va==='number'&&typeof vb==='number') return latestSort.dir==='asc'?va-vb:vb-va;
+          return latestSort.dir==='asc'?String(va).localeCompare(String(vb)):String(vb).localeCompare(String(va));
+        });
+      }
+      const tb = document.getElementById('latestBody');
+      tb.innerHTML = rows.map(r =>
+        '<tr>'+
+        '<td>'+r.user_label+'</td>'+
+        '<td><strong>'+r.contract_id+'</strong></td>'+
+        '<td>'+r.fecha_inicial+'</td>'+
+        '<td>'+(r.fecha_terminal||'-')+'</td>'+
+        '<td>'+r.tipo+'</td>'+
+        '<td>'+r.dpd_inicial+'</td>'+
+        '<td>'+r.dpd_actual+'</td>'+
+        '<td>'+(r.dias_inicial!=null?r.dias_inicial:'-')+'</td>'+
+        '<td>'+r.estado_actual+'</td>'+
+        '<td><span class="badge-sm '+(r.estado==='ASIGNADO'?'badge-asig':'badge-elim')+'">'+r.estado+'</span></td>'+
+        '</tr>'
+      ).join('');
+      document.getElementById('latestCount').textContent = rows.length + ' de ' + (D.latest||[]).length;
+    }
+
+    function sortLatest(col) {
+      if (latestSort.col===col) latestSort.dir = latestSort.dir==='asc'?'desc':'asc';
+      else { latestSort.col=col; latestSort.dir='asc'; }
+      document.querySelectorAll('.latest-table th').forEach(th=>th.classList.remove('sorted'));
+      const th=document.querySelector('.latest-table th[data-col="'+col+'"]');
+      if(th) th.classList.add('sorted');
+      renderLatest(document.getElementById('latestSearch').value.trim());
+    }
+
+    // AJAX refresh
+    async function refreshDashboard() {
+      const btn = document.getElementById('btnRefresh');
+      btn.disabled = true;
+      btn.classList.add('loading');
+      btn.querySelector('.spinner-sm').style.display='inline-block';
+      const sd = document.getElementById('dStart').value;
+      const ed = document.getElementById('dEnd').value;
+      const p = new URLSearchParams();
+      if (sd) p.set('start_date', sd);
+      if (ed) p.set('end_date', ed);
+      try {
+        const resp = await fetch('/api/dashboard?' + p.toString());
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        D = await resp.json();
+        updateKPIs();
+        initCharts();
+        renderLatest('');
+        document.getElementById('latestSearch').value='';
+        // Update hist link
+        const hl = document.getElementById('histLink');
+        if (hl) hl.href = '/history/asignados-eliminados?start_date='+(sd||'')+'&end_date='+(ed||'');
+      } catch(e) { alert('Error: '+e.message); }
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.querySelector('.spinner-sm').style.display='none';
+    }
+
+    // Init
+    initCharts();
+    updateKPIs();
+    renderLatest('');
+
+    let _st;
+    document.getElementById('latestSearch').addEventListener('input', function(){
+      clearTimeout(_st);
+      _st = setTimeout(()=>renderLatest(this.value.trim()), 150);
+    });
+
+    document.getElementById('dStart').addEventListener('keydown', e=>{if(e.key==='Enter')refreshDashboard();});
+    document.getElementById('dEnd').addEventListener('keydown', e=>{if(e.key==='Enter')refreshDashboard();});
+    """
+
+    return (
+        '<!doctype html><html lang="es"><head>'
+        '<meta charset="utf-8" />'
+        '<meta name="viewport" content="width=device-width, initial-scale=1" />'
+        '<title>Dashboard - Alo Credit</title>'
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />'
+        '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>'
+        '<style>' + css + '</style>'
+        '</head><body>'
+        '<nav class="topbar">'
+        '<div class="topbar-brand"><div class="logo">A</div><h1>Alo Credit</h1></div>'
+        '<div class="topbar-right">'
+        '<a href="/dashboard" class="nav-link active">Dashboard</a>'
+        f'<a href="{html.escape(hist_path)}" class="nav-link" id="histLink">Historial</a>'
+        f'<a href="{html.escape(config_path)}" class="nav-link">Configuracion</a>'
+        f'<form method="post" action="{html.escape(logout_path)}" style="display:inline">'
+        '<button class="nav-link" type="submit" style="color:var(--red);border-color:#FEF2F2">Salir</button></form>'
+        '</div></nav>'
+        '<div class="container">'
+        # Date range bar
+        '<div class="date-bar">'
+        f'<label>Desde</label><input type="date" id="dStart" value="{html.escape(str(default_start))}" />'
+        f'<label>Hasta</label><input type="date" id="dEnd" value="{html.escape(str(default_end))}" />'
+        '<button class="btn-refresh" id="btnRefresh" onclick="refreshDashboard()"><span class="spinner-sm"></span> Actualizar</button>'
+        '</div>'
+        # KPIs - 2 rows of 5
+        '<div class="kpi-row">'
+        f'<div class="kpi"><div class="kpi-label">Total Registros</div><div class="kpi-num" style="color:#FF8C42" id="kTotal">{ov["total"]:,}</div><div class="kpi-sub" id="kRange">{html.escape(ov["fecha_min"])} a {html.escape(ov["fecha_max"])}</div></div>'
+        f'<div class="kpi"><div class="kpi-label">Contratos Unicos</div><div class="kpi-num" style="color:#3B82F6" id="kUnicos">{ov["contratos_unicos"]:,}</div></div>'
+        f'<div class="kpi clickable" onclick="document.getElementById(\'dStart\').value&&(location.href=\'/history/asignados-eliminados?start_date=\'+document.getElementById(\'dStart\').value+\'&end_date=\'+document.getElementById(\'dEnd\').value+\'&status=ASIGNADO\')"><div class="kpi-label">Asignados Activos</div><div class="kpi-num" style="color:#10B981" id="kAsignados">{ov["asignados"]:,}</div></div>'
+        f'<div class="kpi clickable" onclick="document.getElementById(\'dStart\').value&&(location.href=\'/history/asignados-eliminados?start_date=\'+document.getElementById(\'dStart\').value+\'&end_date=\'+document.getElementById(\'dEnd\').value+\'&status=ELIMINADO\')"><div class="kpi-label">Eliminados</div><div class="kpi-num" style="color:#EF4444" id="kEliminados">{ov["eliminados"]:,}</div></div>'
+        f'<div class="kpi"><div class="kpi-label">Promesas Activas</div><div class="kpi-num" style="color:#F59E0B" id="kPromesas">{data["active_promises"]:,}</div></div>'
+        '</div>'
+        '<div class="kpi-row">'
+        f'<div class="kpi clickable" onclick="location.href=\'/history/asignados-eliminados?start_date=\'+document.getElementById(\'dStart\').value+\'&end_date=\'+document.getElementById(\'dEnd\').value+\'&house=serlefin&status=ASIGNADO\'"><div class="kpi-label">Serlefin Asignados</div><div class="kpi-num" style="color:var(--blue)" id="kSerlefin">{ov.get("serlefin_asignados", 0):,}</div></div>'
+        f'<div class="kpi clickable" onclick="location.href=\'/history/asignados-eliminados?start_date=\'+document.getElementById(\'dStart\').value+\'&end_date=\'+document.getElementById(\'dEnd\').value+\'&house=cobyser&status=ASIGNADO\'"><div class="kpi-label">Cobyser Asignados</div><div class="kpi-num" style="color:var(--purple)" id="kCobyser">{ov.get("cobyser_asignados", 0):,}</div></div>'
+        f'<div class="kpi"><div class="kpi-label">Avg Dias Ini</div><div class="kpi-num" style="color:#8B5CF6" id="kAvgIni">{avg["inicial"]:.0f}</div></div>'
+        f'<div class="kpi"><div class="kpi-label">Avg Dias Term</div><div class="kpi-num" style="color:#14B8A6" id="kAvgTerm">{avg["terminal"]:.0f}</div></div>'
+        f'<div class="kpi"><div class="kpi-label">Delta Mora</div><div class="kpi-num" style="color:{delta_color}" id="kDelta">{delta_sign}{delta:.0f}d</div></div>'
+        '</div>'
+        # Charts
+        '<div class="chart-grid">'
+        '<div class="chart-card full"><h3>Volumen Diario de Asignaciones</h3><div class="chart-wrap tall"><canvas id="cD"></canvas></div></div>'
+        '<div class="chart-card"><h3>Distribucion DPD Inicial</h3><div class="chart-wrap"><canvas id="cDPD"></canvas></div></div>'
+        '<div class="chart-card"><h3>Distribucion por Casa</h3><div class="chart-wrap"><canvas id="cU"></canvas></div></div>'
+        '<div class="chart-card"><h3>Estado Actual</h3><div class="chart-wrap"><canvas id="cE"></canvas></div></div>'
+        '<div class="chart-card"><h3>Tipo de Cierre</h3><div class="chart-wrap"><canvas id="cT"></canvas></div></div>'
+        '<div class="chart-card full"><h3>Migracion de Mora: DPD Inicial vs Terminal</h3><div class="chart-wrap tall"><canvas id="cC"></canvas></div></div>'
+        '<div class="chart-card"><h3>Top Flujos Migracion</h3><ul class="flow-list" id="fL"></ul></div>'
+        '<div class="chart-card"><h3>Detalle por Asesor</h3><table class="mini-table"><thead><tr><th>Casa</th><th>Total</th><th>Cerrados</th><th>%</th><th></th></tr></thead><tbody id="uT"></tbody></table></div>'
+        '</div>'
+        # Latest assignments table
+        '<div class="latest-section">'
+        '<div class="latest-header">'
+        '<h3>Ultimos Asignados <span style="font-weight:400;color:var(--text-muted);font-size:11px" id="latestCount"></span></h3>'
+        '<input type="text" class="latest-search" id="latestSearch" placeholder="Buscar contrato, casa, estado..." />'
+        '</div>'
+        '<div class="latest-scroll">'
+        '<table class="latest-table"><thead><tr>'
+        '<th data-col="user_label" onclick="sortLatest(\'user_label\')">Casa</th>'
+        '<th data-col="contract_id" onclick="sortLatest(\'contract_id\')">Contrato</th>'
+        '<th data-col="fecha_inicial" onclick="sortLatest(\'fecha_inicial\')">Fecha Inicial</th>'
+        '<th data-col="fecha_terminal" onclick="sortLatest(\'fecha_terminal\')">Fecha Terminal</th>'
+        '<th data-col="tipo" onclick="sortLatest(\'tipo\')">Tipo</th>'
+        '<th data-col="dpd_inicial" onclick="sortLatest(\'dpd_inicial\')">DPD Ini</th>'
+        '<th data-col="dpd_actual" onclick="sortLatest(\'dpd_actual\')">DPD Act</th>'
+        '<th data-col="dias_inicial" onclick="sortLatest(\'dias_inicial\')">Dias Atraso</th>'
+        '<th data-col="estado_actual" onclick="sortLatest(\'estado_actual\')">Estado Actual</th>'
+        '<th data-col="estado" onclick="sortLatest(\'estado\')">Estado</th>'
+        '</tr></thead><tbody id="latestBody"></tbody></table>'
+        '</div>'
+        '<div class="ver-mas-row">'
+        f'<a href="{html.escape(hist_path)}" id="histLink2">Ver historial completo &rarr;</a>'
+        '</div>'
+        '</div>'
+        '</div>'
+        f'<script>let D={data_json};' + js + '</script>'
+        '</body></html>'
+    )
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_page(request: Request, start_date: str = "", end_date: str = ""):
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
+    if auth_redirect is not None:
+        return auth_redirect
+
+    parsed_start = None
+    parsed_end = None
+    if not (start_date or "").strip():
+        parsed_start = _current_month_start()
+    else:
+        try:
+            parsed_start = _parse_start_date(start_date)
+        except ValueError:
+            parsed_start = _current_month_start()
+    if (end_date or "").strip():
+        try:
+            parsed_end = _parse_start_date(end_date)
+        except ValueError:
+            pass
+
+    try:
+        data = _load_dashboard_data(start_date=parsed_start, end_date=parsed_end)
+        return HTMLResponse(
+            _render_dashboard_html(data),
+            headers=NO_CACHE_HEADERS,
+        )
+    except Exception as error:
+        logger.error("Error cargando dashboard: %s", error, exc_info=True)
+        query = urlencode({"error": str(error)})
+        return RedirectResponse(url=f"/config?{query}", status_code=303)
+
+
+@app.get("/api/dashboard", include_in_schema=False)
+async def api_dashboard_data(request: Request, start_date: str = "", end_date: str = "") -> JSONResponse:
+    """JSON API for dashboard data."""
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
+    if auth_redirect is not None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    parsed_start = None
+    parsed_end = None
+    if not (start_date or "").strip():
+        parsed_start = _current_month_start()
+    else:
+        try:
+            parsed_start = _parse_start_date(start_date)
+        except ValueError:
+            parsed_start = _current_month_start()
+    if (end_date or "").strip():
+        try:
+            parsed_end = _parse_start_date(end_date)
+        except ValueError:
+            pass
+
+    try:
+        data = _load_dashboard_data(start_date=parsed_start, end_date=parsed_end)
+        return JSONResponse(data, headers=NO_CACHE_HEADERS)
+    except Exception as error:
+        logger.error("Error API dashboard: %s", error)
+        return JSONResponse({"error": str(error)}, status_code=500)
+
+
 
 
 @app.get("/_health", include_in_schema=False)
@@ -2202,19 +3033,15 @@ async def panel_health() -> JSONResponse:
     return JSONResponse({"status": "ok", "panel": "running"})
 
 
-@app.get("/", include_in_schema=False)
-async def hidden_root() -> HTMLResponse:
-    raise HTTPException(status_code=404, detail="Not Found")
 
 
-@app.get("/{panel_hash}/login", include_in_schema=False)
+@app.get("/login", include_in_schema=False)
 async def panel_login_page(
-    panel_hash: str,
     request: Request,
     next: str = "",
     error: str = "",
 ) -> HTMLResponse:
-    _assert_hash(panel_hash)
+    pass # _assert_hash removed
     if not settings.ADMIN_AUTH_ENABLED:
         return HTMLResponse("", status_code=404)
 
@@ -2222,31 +3049,30 @@ async def panel_login_page(
     username = admin_panel_auth_service.validate_session_token(token)
     if username:
         return RedirectResponse(
-            url=_safe_next_path(next, panel_hash),
+            url=_safe_next_path(next),
             status_code=303,
             headers=NO_CACHE_HEADERS,
         )
 
     page = _render_login_html(
-        panel_hash=panel_hash,
+        
         error_message=error,
         next_path=next,
     )
     return HTMLResponse(page, headers=NO_CACHE_HEADERS)
 
 
-@app.post("/{panel_hash}/login", include_in_schema=False)
+@app.post("/login", include_in_schema=False)
 async def panel_login_submit(
-    panel_hash: str,
     username: str = Form(""),
     password: str = Form(""),
     next: str = Form(""),
 ) -> RedirectResponse:
-    _assert_hash(panel_hash)
+    pass # _assert_hash removed
     if not settings.ADMIN_AUTH_ENABLED:
-        return RedirectResponse(url=f"/{panel_hash}", status_code=303, headers=NO_CACHE_HEADERS)
+        return RedirectResponse(url=f"/", status_code=303, headers=NO_CACHE_HEADERS)
 
-    safe_next = _safe_next_path(next, panel_hash)
+    safe_next = _safe_next_path(next)
     normalized_user = (username or "").strip().lower()
     if not admin_panel_auth_service.verify_credentials(normalized_user, password):
         query = urlencode(
@@ -2256,7 +3082,7 @@ async def panel_login_submit(
             }
         )
         return RedirectResponse(
-            url=f"/{panel_hash}/login?{query}",
+            url=f"/login?{query}",
             status_code=303,
             headers=NO_CACHE_HEADERS,
         )
@@ -2279,11 +3105,11 @@ async def panel_login_submit(
     return response
 
 
-@app.post("/{panel_hash}/logout", include_in_schema=False)
-async def panel_logout(panel_hash: str) -> RedirectResponse:
-    _assert_hash(panel_hash)
+@app.post("/logout", include_in_schema=False)
+async def panel_logout() -> RedirectResponse:
+    pass # _assert_hash removed
     response = RedirectResponse(
-        url=f"/{panel_hash}/login",
+        url=f"/login",
         status_code=303,
         headers=NO_CACHE_HEADERS,
     )
@@ -2291,21 +3117,20 @@ async def panel_logout(panel_hash: str) -> RedirectResponse:
     return response
 
 
-@app.get("/{panel_hash}", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def panel_home(
     request: Request,
-    panel_hash: str,
     ok: str = "",
     error: str = "",
     load_mora_auto: str = "",
 ) -> HTMLResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
     page = _render_panel_html(
-        panel_hash=panel_hash,
+        
         ok_message=ok,
         error_message=error,
         current_user=str(getattr(request.state, "panel_user", "-")),
@@ -2314,10 +3139,11 @@ async def panel_home(
     return HTMLResponse(page, headers=NO_CACHE_HEADERS)
 
 
-@app.get("/{panel_hash}/reports/{house_key}", include_in_schema=False)
-async def download_house_report(request: Request, panel_hash: str, house_key: str):
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+@app.get("/reports/{house_key}", include_in_schema=False)
+async def download_house_report(request: Request, house_key: str, source: str = ""):
+    """Download Excel report. source=history to use historical data."""
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2330,12 +3156,14 @@ async def download_house_report(request: Request, panel_hash: str, house_key: st
         raise HTTPException(status_code=404, detail="Not Found")
 
     user_id, user_name, house_tag = house
+    use_history = (source or "").strip().lower() == "history"
 
     try:
         file_path = _generate_house_report(
             user_id=user_id,
             user_name=user_name,
             house_tag=house_tag,
+            use_history=use_history,
         )
         return FileResponse(
             path=str(file_path),
@@ -2345,13 +3173,111 @@ async def download_house_report(request: Request, panel_hash: str, house_key: st
     except Exception as error:
         logger.error("Error generando/descargando informe %s: %s", house_key, error)
         query = urlencode({"error": str(error)})
-        return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
+        return RedirectResponse(url=f"/config?{query}", status_code=303)
 
 
-@app.get("/{panel_hash}/history/asignados-eliminados", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/api/history", include_in_schema=False)
+async def api_history_data(
+    request: Request,
+    start_date: str = "",
+    end_date: str = "",
+    min_days: str = "",
+    max_days: str = "",
+    status: str = "",
+    house: str = "",
+    user_id: str = "",
+    contract_id: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> JSONResponse:
+    """JSON API for history data - supports AJAX calls from the frontend."""
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
+    if auth_redirect is not None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if not start_date:
+        start_date = _current_month_start().isoformat()
+
+    try:
+        parsed_start_date = _parse_start_date(start_date)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
+
+    parsed_end_date = None
+    if (end_date or "").strip():
+        try:
+            parsed_end_date = _parse_start_date(end_date)
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+
+    parsed_min_days = int(min_days) if (min_days or "").strip() else None
+    parsed_max_days = int(max_days) if (max_days or "").strip() else None
+    selected_status = (status or "").strip().upper()
+    selected_house = (house or "").strip().lower()
+    selected_user_id = int(user_id) if (user_id or "").strip() else None
+    selected_contract_id = int(contract_id) if (contract_id or "").strip() else None
+
+    try:
+        report = _load_assignment_history_report(
+            start_date=parsed_start_date,
+            end_date=parsed_end_date,
+            min_days=parsed_min_days,
+            max_days=parsed_max_days,
+            status_filter=selected_status,
+            house_filter=selected_house,
+            user_id_filter=selected_user_id,
+            contract_id_filter=selected_contract_id,
+            page=max(1, int(page)),
+            page_size=max(10, min(500, int(page_size))),
+        )
+
+        rows_serialized = []
+        for row in report["rows"]:
+            (
+                row_id, uid, contract_id_val, fecha_inicial, fecha_terminal,
+                tipo, dpd_inicial, dpd_final, dpd_actual,
+                dias_inicial, dias_terminal, estado_actual, estado,
+            ) = row
+            rows_serialized.append({
+                "id": row_id,
+                "user_id": uid,
+                "user_label": _format_user_label(uid),
+                "contract_id": contract_id_val,
+                "fecha_inicial": _format_datetime(fecha_inicial),
+                "fecha_terminal": _format_datetime(fecha_terminal),
+                "tipo": str(tipo or "-"),
+                "dpd_inicial": str(dpd_inicial or "-"),
+                "dpd_final": str(dpd_final or "-"),
+                "dpd_actual": str(dpd_actual or "-"),
+                "dias_inicial": dias_inicial,
+                "dias_terminal": dias_terminal,
+                "estado_actual": str(estado_actual or "-"),
+                "estado": estado,
+            })
+
+        return JSONResponse({
+            "total_rows": report["total_rows"],
+            "asignados": report["asignados"],
+            "eliminados": report["eliminados"],
+            "serlefin_asignados": report.get("serlefin_asignados", 0),
+            "cobyser_asignados": report.get("cobyser_asignados", 0),
+            "page": report["page"],
+            "page_size": report["page_size"],
+            "total_pages": report["total_pages"],
+            "has_prev": report["has_prev"],
+            "has_next": report["has_next"],
+            "rows": rows_serialized,
+        }, headers=NO_CACHE_HEADERS)
+
+    except Exception as error:
+        logger.error("Error API history: %s", error)
+        return JSONResponse({"error": str(error)}, status_code=500)
+
+
+@app.get("/history/asignados-eliminados", response_class=HTMLResponse, include_in_schema=False)
 async def assignment_history_report(
     request: Request,
-    panel_hash: str,
     start_date: str = "",
     end_date: str = "",
     min_days: str = "",
@@ -2363,8 +3289,8 @@ async def assignment_history_report(
     page: int = 1,
     page_size: int = 100,
 ):
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2438,7 +3364,7 @@ async def assignment_history_report(
             page_size=int(page_size),
         )
         return HTMLResponse(
-            _render_assignment_history_report_html(panel_hash, report),
+            _render_assignment_history_report_html( report),
             headers=NO_CACHE_HEADERS,
         )
     except Exception as error:
@@ -2447,10 +3373,9 @@ async def assignment_history_report(
         return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.get("/{panel_hash}/history/asignados-eliminados/download", include_in_schema=False)
+@app.get("/history/asignados-eliminados/download", include_in_schema=False)
 async def download_assignment_history(
     request: Request,
-    panel_hash: str,
     start_date: str = "",
     end_date: str = "",
     min_days: str = "",
@@ -2461,8 +3386,8 @@ async def download_assignment_history(
     contract_id: str = "",
 ):
     """Descarga Excel con todo el historial de asignados/eliminados y columna de promesa activa."""
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2648,14 +3573,13 @@ async def download_assignment_history(
         raise HTTPException(status_code=500, detail=f"Error generando Excel: {error}")
 
 
-@app.get("/{panel_hash}/history/rotacion-mora", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/history/rotacion-mora", response_class=HTMLResponse, include_in_schema=False)
 async def mora_rotation_report(
     request: Request,
-    panel_hash: str,
     start_date: str = "",
 ):
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2670,7 +3594,7 @@ async def mora_rotation_report(
     try:
         report = _load_mora_rotation_report(start_date=parsed_start_date)
         return HTMLResponse(
-            _render_mora_rotation_report_html(panel_hash, report),
+            _render_mora_rotation_report_html( report),
             headers=NO_CACHE_HEADERS,
         )
     except Exception as error:
@@ -2679,14 +3603,13 @@ async def mora_rotation_report(
         return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.post("/{panel_hash}/blacklist/upload", include_in_schema=False)
+@app.post("/blacklist/upload", include_in_schema=False)
 async def upload_contract_blacklist(
     request: Request,
-    panel_hash: str,
     blacklist_file: UploadFile = File(...),
 ) -> RedirectResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2714,10 +3637,9 @@ async def upload_contract_blacklist(
     return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.post("/{panel_hash}/save", include_in_schema=False)
+@app.post("/save", include_in_schema=False)
 async def save_panel_config(
     request: Request,
-    panel_hash: str,
     serlefin_percent: float = Form(...),
     cobyser_percent: float = Form(...),
     min_days: int = Form(...),
@@ -2725,8 +3647,8 @@ async def save_panel_config(
     actor_email: str = Form(AUDITOR_EMAIL),
     reason: str = Form(""),
 ) -> RedirectResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2782,10 +3704,10 @@ async def save_panel_config(
     return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.post("/{panel_hash}/run-assignment-now", include_in_schema=False)
-async def run_assignment_now_from_panel(request: Request, panel_hash: str) -> RedirectResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+@app.post("/run-assignment-now", include_in_schema=False)
+async def run_assignment_now_from_panel(request: Request) -> RedirectResponse:
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2821,13 +3743,12 @@ async def run_assignment_now_from_panel(request: Request, panel_hash: str) -> Re
     return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.get("/{panel_hash}/blacklist/download", include_in_schema=False)
+@app.get("/blacklist/download", include_in_schema=False)
 async def download_contract_blacklist(
     request: Request,
-    panel_hash: str,
 ):
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2844,10 +3765,10 @@ async def download_contract_blacklist(
     )
 
 
-@app.post("/{panel_hash}/validate-db-processes", include_in_schema=False)
-async def validate_db_processes_from_panel(request: Request, panel_hash: str) -> RedirectResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+@app.post("/validate-db-processes", include_in_schema=False)
+async def validate_db_processes_from_panel(request: Request) -> RedirectResponse:
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 
@@ -2876,10 +3797,10 @@ async def validate_db_processes_from_panel(request: Request, panel_hash: str) ->
     return RedirectResponse(url=f"/{panel_hash}?{query}", status_code=303)
 
 
-@app.post("/{panel_hash}/finalize-assignments", include_in_schema=False)
-async def finalize_assignments_from_panel(request: Request, panel_hash: str) -> RedirectResponse:
-    _assert_hash(panel_hash)
-    auth_redirect = _require_panel_auth(request, panel_hash)
+@app.post("/finalize-assignments", include_in_schema=False)
+async def finalize_assignments_from_panel(request: Request) -> RedirectResponse:
+    pass # _assert_hash removed
+    auth_redirect = _require_panel_auth(request)
     if auth_redirect is not None:
         return auth_redirect
 

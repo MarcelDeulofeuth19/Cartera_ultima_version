@@ -1,9 +1,13 @@
 """
 Scheduler interno para ejecutar asignacion automatica en horarios de negocio.
+Incluye limpieza automatica de reportes Excel cada 24 horas.
 """
 import asyncio
 import logging
+import os
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.config import settings
@@ -13,6 +17,9 @@ from app.services.assignment_service import AssignmentService
 
 logger = logging.getLogger(__name__)
 
+REPORT_CLEANUP_INTERVAL_HOURS = 24
+REPORT_MAX_AGE_HOURS = 24
+
 
 class AutoAssignmentScheduler:
     """
@@ -21,6 +28,7 @@ class AutoAssignmentScheduler:
 
     def __init__(self):
         self._task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
         try:
@@ -44,6 +52,7 @@ class AutoAssignmentScheduler:
 
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run_loop(), name="auto-assignment-scheduler")
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop(), name="report-cleanup-scheduler")
 
         logger.info(
             "Scheduler automatico iniciado: %02d:%02d (%s), dias=%s",
@@ -55,19 +64,18 @@ class AutoAssignmentScheduler:
 
     async def stop(self) -> None:
         """Detiene el scheduler de forma ordenada."""
-        if not self._task:
-            return
-
         self._stop_event.set()
-        self._task.cancel()
 
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._task = None
+        for task in (self._task, self._cleanup_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
+        self._task = None
+        self._cleanup_task = None
         logger.info("Scheduler automatico detenido")
 
     async def _run_loop(self) -> None:
@@ -138,6 +146,52 @@ class AutoAssignmentScheduler:
         except ProcessLockError:
             logger.warning(
                 "Se omite ejecucion programada porque ya hay un proceso de asignacion en curso"
+            )
+
+    async def _cleanup_loop(self) -> None:
+        """Background loop that cleans up old Excel/report files every 24 hours."""
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.to_thread(self._cleanup_old_reports)
+            except Exception as error:
+                logger.error("Error en limpieza de reportes: %s", error, exc_info=True)
+
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=REPORT_CLEANUP_INTERVAL_HOURS * 3600,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    @staticmethod
+    def _cleanup_old_reports() -> None:
+        """Delete Excel/report files older than REPORT_MAX_AGE_HOURS."""
+        reports_dir = Path(settings.REPORTS_DIR)
+        if not reports_dir.exists():
+            return
+
+        cutoff = time.time() - (REPORT_MAX_AGE_HOURS * 3600)
+        extensions = {".xlsx", ".xls", ".csv", ".txt"}
+        removed = 0
+
+        for file_path in reports_dir.iterdir():
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in extensions:
+                continue
+            try:
+                if file_path.stat().st_mtime < cutoff:
+                    file_path.unlink()
+                    removed += 1
+            except OSError:
+                pass
+
+        if removed:
+            logger.info(
+                "Limpieza de reportes: %d archivos eliminados en %s (antiguedad > %dh)",
+                removed, reports_dir, REPORT_MAX_AGE_HOURS,
             )
 
 

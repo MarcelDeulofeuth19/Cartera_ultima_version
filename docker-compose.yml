@@ -1,4 +1,4 @@
-﻿services:
+services:
   # ==========================================
   # Base interna para configuracion y auditoria
   # Puerto host: 5559
@@ -115,10 +115,10 @@
       resources:
         limits:
           cpus: '1.0'
-          memory: 256M
+          memory: 1024M
         reservations:
           cpus: '0.25'
-          memory: 128M
+          memory: 512M
 
   # ==============================================
   # Panel visual protegido por hash
@@ -130,7 +130,7 @@
       dockerfile: Dockerfile
     container_name: asignacion-contratos-admin-panel
     user: "0:0"
-    command: ["uvicorn", "admin_panel:app", "--host", "0.0.0.0", "--port", "9007"]
+    command: ["uvicorn", "admin_panel:app", "--host", "0.0.0.0", "--port", "9007", "--timeout-keep-alive", "120"]
     ports:
       - "9006:9007"
     environment:
@@ -138,6 +138,7 @@
       - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
       - ADMIN_PANEL_HASH=3e63c8d8d94f44288b5f90d2c16fd101
       - ADMIN_DEFAULT_AUDIT_ACTOR=mdeulofeuth@alocredit.co
+      - ADMIN_EXTRA_USERS=[{"username":"fabian","password":"w3eZ9F4CbsSCro84"},{"username":"jessenia","password":"Buten7xGpiw0zekF"},{"username":"marcel","password":"fFISOXS-f80SD57f"}]
       - DEFAULT_SERLEFIN_PERCENT=60
       - DEFAULT_COBYSER_PERCENT=40
       - DEFAULT_ASSIGNMENT_MIN_DAYS=61
@@ -162,11 +163,11 @@
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 128M
+          cpus: '1.0'
+          memory: 512M
         reservations:
-          cpus: '0.1'
-          memory: 64M
+          cpus: '0.25'
+          memory: 128M
 
     networks:
       - app-network

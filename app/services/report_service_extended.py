@@ -43,7 +43,7 @@ class ReportServiceExtended:
     def get_assigned_contracts(self, user_id: int) -> List[int]:
         """Obtiene los contratos asignados a un usuario"""
         query = f"SELECT contract_id FROM contract_advisors WHERE user_id = {user_id};"
-        
+
         try:
             conn = psycopg2.connect(
                 host=self.db_config_ind['host'],
@@ -58,6 +58,29 @@ class ReportServiceExtended:
             return df['contract_id'].tolist() if not df.empty else []
         except Exception as e:
             logger.error(f"Error obteniendo contratos para user {user_id}: {e}")
+            return []
+
+    def get_assigned_contracts_for_house(self, user_ids: List[int]) -> List[int]:
+        """Obtiene TODOS los contratos asignados a cualquier usuario de la casa."""
+        if not user_ids:
+            return []
+        users_str = ",".join(str(int(uid)) for uid in user_ids)
+        query = f"SELECT DISTINCT contract_id FROM contract_advisors WHERE user_id IN ({users_str});"
+
+        try:
+            conn = psycopg2.connect(
+                host=self.db_config_ind['host'],
+                user=self.db_config_ind['user'],
+                password=self.db_config_ind['password'],
+                dbname=self.db_config_ind['database'],
+                port=self.db_config_ind['port'],
+                options=self.db_config_ind['options']
+            )
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df['contract_id'].tolist() if not df.empty else []
+        except Exception as e:
+            logger.error(f"Error obteniendo contratos para casa {user_ids}: {e}")
             return []
     
     def generate_detailed_query(self, lista_contratos: str) -> str:
@@ -325,8 +348,8 @@ SELECT
     'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k' AS Descripcion_opcion_4
 
 FROM contract c
-JOIN application a ON a.id = c.application_id
-JOIN customer c2 ON c2.id = a.customer_id
+LEFT JOIN application a ON a.id = c.application_id
+LEFT JOIN customer c2 ON c2.id = a.customer_id
 LEFT JOIN DeudaActual da ON da.contract_id = c.id
 LEFT JOIN Descuentos dsc ON dsc.contract_id = c.id
 LEFT JOIN ValorFinalDescuento vfd ON vfd.contract_id = c.id
@@ -374,6 +397,28 @@ ORDER BY c.id ASC;
 
             # PostgreSQL normaliza a minusculas aliases sin comillas.
             cols_by_lower = {str(col).lower(): col for col in df.columns}
+
+            # Detectar contratos asignados que no existen en PostgreSQL produccion
+            # y obtener sus datos desde MySQL (fuente original).
+            contrato_col_temp = cols_by_lower.get('contrato_x')
+            if contrato_col_temp and len(df) < len(contracts):
+                reported_ids = set(df[contrato_col_temp].dropna().astype(int).values)
+                missing_ids = [cid for cid in contracts if cid not in reported_ids]
+                if missing_ids:
+                    logger.warning(
+                        "Reporte %s: %d contratos no existen en PG produccion. "
+                        "Consultando MySQL como fallback.",
+                        user_name, len(missing_ids),
+                    )
+                    mysql_df = self._fetch_missing_contracts_from_mysql(
+                        missing_ids, df.columns.tolist(), cols_by_lower,
+                    )
+                    if mysql_df is not None and not mysql_df.empty:
+                        df = pd.concat([df, mysql_df], ignore_index=True)
+                        logger.info(
+                            "Reporte %s: %d contratos recuperados desde MySQL.",
+                            user_name, len(mysql_df),
+                        )
 
             # Forzar dias/rango del reporte con la misma logica operativa de asignacion (MySQL).
             if days_overdue_map is None:
@@ -443,6 +488,268 @@ ORDER BY c.id ASC;
                 return None
             return int(value)
         except Exception:
+            return None
+
+    def _fetch_missing_contracts_from_mysql(
+        self,
+        missing_ids: List[int],
+        target_columns: List[str],
+        cols_by_lower: Dict[str, str],
+    ) -> Optional[pd.DataFrame]:
+        """
+        Consulta MySQL para obtener datos de contratos que no existen en PG produccion.
+        Retorna un DataFrame con las mismas columnas que el reporte principal.
+        """
+        if not missing_ids:
+            return None
+
+        try:
+            from app.database.connections import db_manager
+            from sqlalchemy import text
+
+            batch_size = 1000
+            all_rows = []
+
+            with db_manager.get_mysql_session() as mysql_session:
+                for i in range(0, len(missing_ids), batch_size):
+                    batch = missing_ids[i : i + batch_size]
+                    batch_str = ",".join(str(int(cid)) for cid in batch)
+
+                    query = text(f"""
+                        SELECT
+                            c.id AS contract_id,
+                            CONCAT('PHONE', c.id) AS llave,
+                            'PHONE' AS producto,
+                            CONCAT_WS(' ', cu.name, cu.name2, cu.last_name, cu.last_name2) AS cliente,
+                            cu.phone AS telefono,
+                            cu.email AS correo,
+                            cu.dni AS cedula,
+                            cu.departament_reference AS ciudad,
+                            COALESCE(SUM(ca.outstanding_principal), 0) AS capital_pendiente,
+                            SUM(
+                                COALESCE(ca.interest_payment,0) +
+                                COALESCE(ca.endorsement,0) +
+                                COALESCE(ca.vat,0) +
+                                COALESCE(ca.seguro_vida,0) +
+                                COALESCE(ca.seguro,0) +
+                                COALESCE(ca.digital_sign,0) +
+                                COALESCE(ca.digital_sign_iva,0)
+                            ) AS gastos_vencidos,
+                            COALESCE(SUM(ca.outstanding_principal), 0) + SUM(
+                                COALESCE(ca.interest_payment,0) +
+                                COALESCE(ca.endorsement,0) +
+                                COALESCE(ca.vat,0) +
+                                COALESCE(ca.seguro_vida,0) +
+                                COALESCE(ca.seguro,0) +
+                                COALESCE(ca.digital_sign,0) +
+                                COALESCE(ca.digital_sign_iva,0)
+                            ) AS deuda_actual,
+                            DATEDIFF(CURDATE(), MIN(ca.expiration_date)) AS dias_iniciales_mes,
+                            COUNT(ca.id) AS cuotas_atrasadas,
+                            (
+                                SELECT al2.quota
+                                FROM application_loan al2
+                                WHERE al2.application_id = a.id
+                                ORDER BY al2.id DESC
+                                LIMIT 1
+                            ) AS quota
+                        FROM contract c
+                        JOIN application a ON a.id = c.application_id
+                        JOIN customer cu ON cu.id = a.customer_id
+                        LEFT JOIN contract_amortization ca
+                            ON ca.contract_id = c.id
+                            AND ca.contract_amortization_payment_status_id = 4
+                            AND ca.expiration_date <= CURDATE()
+                            AND ca.outstanding_principal > 0
+                        WHERE c.id IN ({batch_str})
+                        GROUP BY c.id, a.id, cu.name, cu.name2, cu.last_name, cu.last_name2,
+                                 cu.phone, cu.email, cu.dni, cu.departament_reference
+                    """)
+
+                    result = mysql_session.execute(query)
+                    for row in result:
+                        all_rows.append(row)
+
+            if not all_rows:
+                return None
+
+            # Construir DataFrame con las mismas columnas del reporte
+            contrato_col = cols_by_lower.get('contrato_x', 'contrato_x')
+            llave_col = cols_by_lower.get('llave', 'llave')
+            producto_col = cols_by_lower.get('producto', 'producto')
+            cliente_col = cols_by_lower.get('cliente', 'cliente')
+            telefono_col = cols_by_lower.get('telefono', 'telefono')
+            correo_col = cols_by_lower.get('correo', 'correo')
+            cedula_col = cols_by_lower.get('cedula', 'cedula')
+            ciudad_col = cols_by_lower.get('ciudad', 'ciudad')
+            capital_col = cols_by_lower.get('capital_pendiente', 'capital_pendiente')
+            gastos_col = cols_by_lower.get('gastos_vencidos', 'gastos_vencidos')
+            deuda_col = cols_by_lower.get('deuda_actual', 'deuda_actual')
+            dias_col = cols_by_lower.get('dias_iniciales_mes', 'dias_iniciales_mes')
+            cuotas_col = (
+                cols_by_lower.get('cuotas atrasadas')
+                or cols_by_lower.get('cuotas_atrasadas')
+                or 'Cuotas Atrasadas'
+            )
+
+            rows_data = []
+            for row in all_rows:
+                (
+                    contract_id, llave, producto, cliente, telefono,
+                    correo, cedula, ciudad, capital, gastos, deuda,
+                    dias, cuotas, quota,
+                ) = row
+
+                capital = float(capital or 0)
+                gastos = float(gastos or 0)
+                deuda = float(deuda or 0)
+                dias = int(dias) if dias is not None else 0
+                cuotas = int(cuotas) if cuotas is not None else 0
+                quota = float(quota) if quota is not None else None
+
+                # Calcular factores de descuento (misma logica que PG)
+                if dias <= 150:
+                    factor_capital = 1.0
+                elif dias <= 180:
+                    factor_capital = 0.95
+                elif dias <= 300:
+                    factor_capital = 0.90
+                else:
+                    factor_capital = 0.75
+
+                if dias <= 90:
+                    factor_gastos = 0.70
+                elif dias <= 120:
+                    factor_gastos = 0.60
+                elif dias <= 150:
+                    factor_gastos = 0.50
+                elif dias <= 365:
+                    factor_gastos = 0.40
+                else:
+                    factor_gastos = 0.0
+
+                valor_final_descuento = round(capital * factor_capital + gastos * factor_gastos)
+
+                # Comision
+                if 1 <= dias <= 60:
+                    comision = '4%'
+                elif 61 <= dias <= 90:
+                    comision = '6%'
+                elif 91 <= dias <= 150:
+                    comision = '8%'
+                elif 151 <= dias <= 210:
+                    comision = '11%'
+                elif dias == 211:
+                    comision = '13%'
+                elif dias >= 212:
+                    comision = '15%'
+                else:
+                    comision = '0%'
+
+                # Rango
+                if 1 <= dias <= 30:
+                    rango = '1_30'
+                elif 31 <= dias <= 60:
+                    rango = '31_60'
+                elif 61 <= dias <= 90:
+                    rango = '61_90'
+                elif 91 <= dias <= 150:
+                    rango = '91_150'
+                elif 151 <= dias <= 210:
+                    rango = '151_210'
+                elif dias == 211:
+                    rango = '211'
+                elif dias >= 212:
+                    rango = 'Cartera Castigada'
+                else:
+                    rango = '0'
+
+                r = {col: None for col in target_columns}
+                r[contrato_col] = contract_id
+                r[llave_col] = llave
+                r[producto_col] = producto
+                r[cliente_col] = cliente
+                r[telefono_col] = telefono
+                r[correo_col] = correo
+                r[cedula_col] = cedula
+                r[ciudad_col] = ciudad
+                r[capital_col] = capital
+                r[gastos_col] = gastos
+                r[deuda_col] = deuda
+                r[dias_col] = dias
+                r[cuotas_col] = cuotas
+
+                # Campos calculados
+                pago_cap_col = cols_by_lower.get('%_pago_capital')
+                if pago_cap_col:
+                    r[pago_cap_col] = f"{int(factor_capital * 100)}%"
+                desc_gastos_col = cols_by_lower.get('%_descuento_gastos')
+                if desc_gastos_col:
+                    r[desc_gastos_col] = f"{int(factor_gastos * 100)}%"
+                vfd_col = cols_by_lower.get('valor_final_descuento')
+                if vfd_col:
+                    r[vfd_col] = valor_final_descuento
+
+                # Opciones de pago
+                quota_col = cols_by_lower.get('valor_opcion_1')
+                if quota_col:
+                    r[quota_col] = quota
+                op2_1 = cols_by_lower.get('valor_1_cuota_opcion_2')
+                if op2_1:
+                    r[op2_1] = deuda
+                op2_2 = cols_by_lower.get('valor_2_cuotas_opcion_2')
+                if op2_2:
+                    r[op2_2] = round(deuda / 2) if deuda else 0
+                op2_3 = cols_by_lower.get('valor_3_cuotas_opcion_2')
+                if op2_3:
+                    r[op2_3] = round(deuda / 3) if deuda > 600000 else None
+                op3_1 = cols_by_lower.get('valor_1_cuota_opcion_3')
+                if op3_1:
+                    r[op3_1] = valor_final_descuento
+                op3_2 = cols_by_lower.get('valor_2_cuotas_opcion_3')
+                if op3_2:
+                    r[op3_2] = round(valor_final_descuento / 2) if valor_final_descuento else 0
+                op3_3 = cols_by_lower.get('valor_3_cuotas_opcion_3')
+                if op3_3:
+                    r[op3_3] = round(valor_final_descuento / 3) if valor_final_descuento > 600000 else None
+                op4_1 = cols_by_lower.get('valor_1_cuota_opcion_4')
+                if op4_1:
+                    r[op4_1] = capital
+                op4_2 = cols_by_lower.get('valor_2_cuotas_opcion_4')
+                if op4_2:
+                    r[op4_2] = round(capital / 2) if capital else 0
+                op4_3 = cols_by_lower.get('valor_3_cuotas_opcion_4')
+                if op4_3:
+                    r[op4_3] = round(capital / 3) if capital > 600000 else None
+
+                comision_col = cols_by_lower.get('comision')
+                if comision_col:
+                    r[comision_col] = comision
+                rango_col = cols_by_lower.get('rango')
+                if rango_col:
+                    r[rango_col] = rango
+
+                desc1 = cols_by_lower.get('descripcion_opcion_1')
+                if desc1:
+                    r[desc1] = 'Pagar_1_cuota__para_normalizar'
+                desc2 = cols_by_lower.get('descripcion_opcion_2')
+                if desc2:
+                    r[desc2] = 'Pagar_de_1_a_3_cuotas'
+                desc3 = cols_by_lower.get('descripcion_opcion_3')
+                if desc3:
+                    r[desc3] = 'descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k'
+                desc4 = cols_by_lower.get('descripcion_opcion_4')
+                if desc4:
+                    r[desc4] = 'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k'
+
+                rows_data.append(r)
+
+            return pd.DataFrame(rows_data)
+
+        except Exception as error:
+            logger.warning(
+                "No se pudo consultar MySQL para contratos faltantes: %s", error,
+            )
             return None
 
     def _load_operational_days_overdue(self, contracts: List[int]) -> Dict[int, int]:
@@ -573,9 +880,9 @@ ORDER BY c.id ASC;
             Dict: MÃ©tricas de distribuciÃ³n
         """
         try:
-            contracts_81 = self.get_assigned_contracts(81)
-            contracts_45 = self.get_assigned_contracts(45)
-            
+            contracts_81 = self.get_assigned_contracts_for_house(settings.SERLEFIN_USERS)
+            contracts_45 = self.get_assigned_contracts_for_house(settings.COBYSER_USERS)
+
             total = len(contracts_81) + len(contracts_45)
             
             if total == 0:

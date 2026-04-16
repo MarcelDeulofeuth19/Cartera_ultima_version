@@ -113,7 +113,7 @@ class EmailService:
 
     def send_multiple_reports(
         self,
-        recipient: str,
+        recipient: Union[str, List[str]],
         serlefin_file: str,
         cobyser_file: str,
         metrics_html: str,
@@ -124,7 +124,7 @@ class EmailService:
         Envia informes de ambas casas de cobranza.
 
         Args:
-            recipient: Correo del destinatario
+            recipient: Correo del destinatario o lista de destinatarios
             serlefin_file: Ruta del archivo Excel de Serlefin
             cobyser_file: Ruta del archivo Excel de Cobyser
             metrics_html: HTML con metricas de asignacion
@@ -138,9 +138,14 @@ class EmailService:
         cobyser_file_exists = bool(cobyser_file) and Path(cobyser_file).exists()
 
         # Regla general: Serlefin sin adjunto. Excepcion por destinatario.
+        if isinstance(recipient, list):
+            requires_attachment = any(self._recipient_requires_serlefin_attachment(r) for r in recipient)
+        else:
+            requires_attachment = self._recipient_requires_serlefin_attachment(str(recipient))
+
         effective_attach_serlefin = (
             attach_serlefin_file
-            or self._recipient_requires_serlefin_attachment(recipient)
+            or requires_attachment
         )
         effective_attach_cobyser = attach_cobyser_file
 

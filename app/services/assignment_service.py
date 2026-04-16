@@ -1,4 +1,4 @@
-﻿"""
+"""
 Servicio principal de asignaciÃ³n de contratos.
 Implementa la lÃ³gica de contratos fijos, limpieza y balanceo configurable.
 """
@@ -1752,7 +1752,9 @@ class AssignmentService:
                 metrics.get("cobyser_percent", 0),
             )
 
-            contracts_81 = report_service_extended.get_assigned_contracts(81)
+            contracts_81 = report_service_extended.get_assigned_contracts_for_house(
+                settings.SERLEFIN_USERS
+            )
             file_81, _ = report_service_extended.generate_report_for_user(
                 user_id=81,
                 user_name="Serlefin",
@@ -1761,7 +1763,9 @@ class AssignmentService:
             if file_81:
                 generated_report_files.append(file_81)
 
-            contracts_45 = report_service_extended.get_assigned_contracts(45)
+            contracts_45 = report_service_extended.get_assigned_contracts_for_house(
+                settings.COBYSER_USERS
+            )
             file_45, _ = report_service_extended.generate_report_for_user(
                 user_id=45,
                 user_name="Cobyser",
@@ -1838,18 +1842,17 @@ class AssignmentService:
                     return
 
                 expected_total += len(recipients)
-                for recipient in recipients:
-                    ok = email_service.send_assignment_report(
-                        recipient=recipient,
-                        subject=subject,
-                        body=body,
-                        attachments=attachments or None,
-                    )
-                    if ok:
-                        sent_ok += 1
-                        logger.info("Correo %s enviado a %s", label, recipient)
-                    else:
-                        logger.warning("No se pudo enviar correo %s a %s", label, recipient)
+                ok = email_service.send_assignment_report(
+                    recipient=recipients,
+                    subject=subject,
+                    body=body,
+                    attachments=attachments or None,
+                )
+                if ok:
+                    sent_ok += len(recipients)
+                    logger.info("Correo %s enviado a grupo: %s", label, ", ".join(recipients))
+                else:
+                    logger.warning("No se pudo enviar correo %s a grupo: %s", label, ", ".join(recipients))
 
             if cobyser_recipients:
                 cobyser_subject = "Asignacion de cartera - Cobyser (notificacion + base)"

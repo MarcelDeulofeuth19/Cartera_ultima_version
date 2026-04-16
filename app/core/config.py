@@ -1,4 +1,4 @@
-﻿"""
+"""
 ConfiguraciÃ³n centralizada de la aplicaciÃ³n.
 Gestiona las credenciales de bases de datos y parÃ¡metros del sistema.
 """
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     CLIENT_DOCUMENT_BLACKLIST_FILE: str = "app/data/client_document_blacklist.txt"
 
     # SMTP para envio de correos
-    SMTP_SERVER: str = "smtp-relay.gmail.com"
+    SMTP_SERVER: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_HELO_NAME: str = "alocredit.co"
     SMTP_USER: str = "noreply@alocredit.co"
@@ -167,7 +167,8 @@ class Settings(BaseSettings):
     ADMIN_AUTH_SESSION_HOURS: int = 12
     ADMIN_AUTH_COOKIE_NAME: str = "alocredit_admin_session"
     ADMIN_AUTH_COOKIE_SECURE: bool = False
-    
+    ADMIN_EXTRA_USERS: str = "[]"
+
     class Config:
         env_file = ".env"
         case_sensitive = True
