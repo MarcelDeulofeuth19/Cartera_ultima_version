@@ -213,7 +213,7 @@ USER_IDS: List[int] = [45, 81]  # Cambiar IDs aquí
    telnet 57.130.40.1 3306
    
    # PostgreSQL
-   telnet 3.95.195.63 5432
+   telnet 172.31.21.63 5432
    ```
 
 ---

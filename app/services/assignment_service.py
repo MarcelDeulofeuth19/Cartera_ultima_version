@@ -51,9 +51,6 @@ class AssignmentService:
         self.runtime_config_service = RuntimeConfigService()
         self._estado_actual_column_ready = False
         self._history_dpd_actual_column_ready = False
-        
-        # Variables de control para balanceo
-        self._last_assigned_user = settings.USER_IDS[1]  # Empieza con 81
 
     def _require_contract_service(self) -> ContractService:
         """Devuelve ContractService o falla si no hay sesion MySQL."""
@@ -342,39 +339,6 @@ class AssignmentService:
             logger.error("Error actualizando estado_actual/dpd_actual: %s", error)
             stats["sync_failed"] = len(params)
             return stats
-
-    @staticmethod
-    def _build_weighted_sequence(
-        total: int,
-        serlefin_ratio: float = 0.6,
-        initial_count_81: int = 0,
-        initial_count_45: int = 0,
-    ) -> List[int]:
-        """
-        Genera una secuencia balanceada por peso para repartir contratos.
-
-        Ejemplo con total=3 y ratio 0.6 => [81, 45, 81]
-        """
-        sequence: List[int] = []
-        count_81 = int(initial_count_81)
-        count_45 = int(initial_count_45)
-
-        for index in range(total):
-            expected_total = initial_count_81 + initial_count_45 + index + 1
-            expected_81 = expected_total * serlefin_ratio
-            expected_45 = expected_total * (1 - serlefin_ratio)
-
-            deficit_81 = expected_81 - count_81
-            deficit_45 = expected_45 - count_45
-
-            if deficit_81 >= deficit_45:
-                sequence.append(81)
-                count_81 += 1
-            else:
-                sequence.append(45)
-                count_45 += 1
-
-        return sequence
 
     @staticmethod
     def _compute_house_quotas(total: int, serlefin_ratio: float) -> Dict[int, int]:
@@ -695,7 +659,7 @@ class AssignmentService:
             }
         return metadata
     
-    def process_manual_fixed_contracts(self, manual_contracts: Dict[int, List[int]]) -> Dict[str, any]:
+    def process_manual_fixed_contracts(self, manual_contracts: Dict[int, List[int]]) -> Dict[str, Any]:
         """
         Procesa contratos fijos manuales con validaciones por lotes.
         
@@ -1956,7 +1920,8 @@ class AssignmentService:
             logger.error(f"Error en generate_and_send_reports: {e}")
             return False
         finally:
-            self._cleanup_generated_report_files(generated_report_files)
+            # self._cleanup_generated_report_files(generated_report_files)
+            pass
 
     @staticmethod
     def _cleanup_generated_report_files(file_paths: List[str]) -> None:

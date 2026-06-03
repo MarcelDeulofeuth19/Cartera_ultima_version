@@ -4,7 +4,7 @@ Permite agregar contratos fijos desde una lista manual y validarlos en lotes.
 Procesa contratos para Cobyser (Usuario 45) y Serlefin (Usuario 81).
 """
 import logging
-from typing import List, Dict, Set, Optional
+from typing import Any, List, Dict, Set, Optional
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.database.models import ContractAdvisor, Management
@@ -53,9 +53,9 @@ class ManualFixedService:
         )
     
     def validate_and_insert_manual_fixed(
-        self, 
+        self,
         manual_contracts: Dict[int, List[int]]
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Valida e inserta contratos fijos manuales por lotes.
         

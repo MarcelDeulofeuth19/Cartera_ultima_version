@@ -176,7 +176,7 @@ El proceso muestra estadísticas detalladas:
 Para agregar el campo `is_fixed` a la tabla `managements`:
 
 ```bash
-psql -h 3.95.195.63 -U nexus_dev_84 -d nexus_db -f migrations/add_is_fixed_column.sql
+psql -h 172.31.21.63 -U nexus_dev_84 -d nexus_db -f migrations/add_is_fixed_column.sql
 ```
 
 O ejecutar manualmente:

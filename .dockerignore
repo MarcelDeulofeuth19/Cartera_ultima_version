@@ -77,3 +77,14 @@ github_actions_*
 
 # OS specific
 Thumbs.db
+
+# Informes/datos generados
+*.csv
+
+# Cobertura de pruebas
+coverage.xml
+.coverage
+htmlcov/
+
+# Entornos virtuales temporales
+.venv_test/

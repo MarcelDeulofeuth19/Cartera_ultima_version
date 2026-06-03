@@ -13,14 +13,14 @@ Se ha actualizado la lógica de **bases fijas** para aplicar dos filtros tempora
 
 ```bash
 # Ejecutar script de migración en PostgreSQL
-psql -h 3.95.195.63 -U nexus_dev_84 -d nexus_db -f migrations/add_is_fixed_column.sql
+psql -h 172.31.21.63 -U nexus_dev_84 -d nexus_db -f migrations/add_is_fixed_column.sql
 ```
 
 O manualmente:
 
 ```sql
 -- Conectarse a PostgreSQL
-psql -h 3.95.195.63 -U nexus_dev_84 -d nexus_db
+psql -h 172.31.21.63 -U nexus_dev_84 -d nexus_db
 
 -- Ejecutar comandos
 ALTER TABLE alocreditindicators.managements 

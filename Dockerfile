@@ -1,4 +1,4 @@
-﻿# Dockerfile Multi-Stage para Sistema de AsignaciÃ³n de Contratos
+# Dockerfile Multi-Stage para Sistema de AsignaciÃ³n de Contratos
 # Optimizado para producciÃ³n
 
 # ================================
@@ -51,7 +51,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Copiar cÃ³digo de la aplicaciÃ³n
 COPY ./app /app/app
 COPY ./main.py /app/
-COPY ./admin_panel.py /app/
+COPY ./run_cycle_end_report.py /app/
 COPY ./.env.example /app/.env
 
 # Crear directorio para reportes

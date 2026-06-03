@@ -50,7 +50,7 @@ services:
       - MYSQL_DATABASE=alocreditprod
 
       # PostgreSQL (nexus_db) - Configuracion externa
-      - POSTGRES_HOST=3.95.195.63
+      - POSTGRES_HOST=172.31.21.63
       - POSTGRES_PORT=5432
       - POSTGRES_USER=nexus_dev_84
       - POSTGRES_PASSWORD=ZehK7wQTpq95eU8r
@@ -67,14 +67,32 @@ services:
       - PAGO_TOTAL_VALIDITY_DAYS=30
       - FIXED_CONTRACT_EFFECT=pago_total
       - AUTO_ASSIGNMENT_ENABLED=True
-      - AUTO_ASSIGNMENT_HOUR=7
+      - AUTO_ASSIGNMENT_HOUR=5
       - AUTO_ASSIGNMENT_MINUTE=0
       - AUTO_ASSIGNMENT_TIMEZONE=America/Bogota
       - AUTO_ASSIGNMENT_WEEKDAYS=0,1,2,3,4,5,6
-      - AUTO_NOTIFICATION_WEEKDAYS=1,3
+      - AUTO_NOTIFICATION_WEEKDAYS=0,1,2,3,4,5,6
+      # Informe de finalizacion de ciclo (ultimo dia de cada mes)
+      - MONTHLY_REPORT_ENABLED=True
+      - MONTHLY_REPORT_HOUR=8
+      - MONTHLY_REPORT_MINUTE=0
+      - MONTHLY_REPORT_TO=jcarrasco@alocredit.co
+      - MONTHLY_REPORT_CC=mdeulofeuth@alocredit.co
+      # Cierre masivo + reasignacion de fin de mes (ultimo dia, 23:00)
+      - MONTHLY_CLOSE_ENABLED=True
+      - MONTHLY_CLOSE_HOUR=23
+      - MONTHLY_CLOSE_MINUTE=0
       - NOTIFICATION_RECIPIENTS=mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co
       - COBYSER_NOTIFICATION_RECIPIENTS=hcaballero@cobyser01.com,jcmartinez@cobyser01.com,fcamacho@alocredit.co,jcarrasco@alocredit.co,mdeulofeuth@alocredit.co
       - SERLEFIN_NOTIFICATION_RECIPIENTS=mdeulofeuth@alocredit.co,fcamacho@alocredit.co,jcarrasco@alocredit.co
+
+      # SMTP (remitente de correos automaticos)
+      - SMTP_SERVER=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_HELO_NAME=alocredit.co
+      - SMTP_USER=notificacionesalo1@alocredit.co
+      - SMTP_PASSWORD=nekzgpcxmbwomdfc
+      - SMTP_FROM=notificacionesalo1@alocredit.co
 
       # Configuracion dinamica (persistida en DB interna)
       - DEFAULT_SERLEFIN_PERCENT=60
@@ -82,9 +100,7 @@ services:
       - DEFAULT_ASSIGNMENT_MIN_DAYS=61
       - DEFAULT_ASSIGNMENT_MAX_DAYS=240
       - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
-      - ADMIN_PANEL_HASH=3e63c8d8d94f44288b5f90d2c16fd101
-      - ADMIN_DEFAULT_AUDIT_ACTOR=mdeulofeuth@alocredit.co
-
+      - API_HMAC_SECRET=Nexus-Production-Key-2026
       # Rutas
       - REPORTS_DIR=/app/reports
       - LOCK_FILE=assignment_process.lock
@@ -120,57 +136,7 @@ services:
           cpus: '0.25'
           memory: 512M
 
-  # ==============================================
-  # Panel visual protegido por hash
-  # Puerto host: 9006
-  # ==============================================
-  admin-panel:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: asignacion-contratos-admin-panel
-    user: "0:0"
-    command: ["uvicorn", "admin_panel:app", "--host", "0.0.0.0", "--port", "9007", "--timeout-keep-alive", "120"]
-    ports:
-      - "9006:9007"
-    environment:
-      - DEBUG=False
-      - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
-      - ADMIN_PANEL_HASH=3e63c8d8d94f44288b5f90d2c16fd101
-      - ADMIN_DEFAULT_AUDIT_ACTOR=mdeulofeuth@alocredit.co
-      - ADMIN_EXTRA_USERS=[{"username":"fabian","password":"w3eZ9F4CbsSCro84"},{"username":"jessenia","password":"Buten7xGpiw0zekF"},{"username":"marcel","password":"fFISOXS-f80SD57f"}]
-      - DEFAULT_SERLEFIN_PERCENT=60
-      - DEFAULT_COBYSER_PERCENT=40
-      - DEFAULT_ASSIGNMENT_MIN_DAYS=61
-      - DEFAULT_ASSIGNMENT_MAX_DAYS=240
-    volumes:
-      - ./app/data/contract_blacklist.txt:/app/app/data/contract_blacklist.txt
-      - ./app/data/client_document_blacklist.txt:/app/app/data/client_document_blacklist.txt
 
-    depends_on:
-      internal-config-db:
-        condition: service_healthy
-
-    restart: unless-stopped
-
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9007/_health"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
-    networks:
-      - app-network
 
 # ================================
 # Redes

@@ -35,12 +35,22 @@ class EmailService:
         """Retorna True si el destinatario esta en la lista de excepcion."""
         return recipient.strip().lower() in self.serlefin_attachment_exception_recipients
 
+    @staticmethod
+    def _normalize_addresses(value: Union[str, List[str], None]) -> List[str]:
+        """Normaliza un destinatario (str CSV o lista) en una lista limpia."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [item.strip() for item in str(value).split(",") if item.strip()]
+
     def send_assignment_report(
         self,
         recipient: Union[str, List[str]],
         subject: str,
         body: str,
         attachments: Optional[List[str]] = None,
+        cc: Union[str, List[str], None] = None,
     ) -> bool:
         """
         Envia un correo con informes de asignacion.
@@ -50,23 +60,17 @@ class EmailService:
             subject: Asunto del correo
             body: Cuerpo del mensaje (HTML)
             attachments: Lista de rutas de archivos a adjuntar
+            cc: Correo(s) en copia (CC). str CSV o lista. Opcional.
 
         Returns:
             bool: True si el envio fue exitoso, False en caso contrario
         """
         try:
-            if isinstance(recipient, list):
-                recipients = [
-                    str(value).strip()
-                    for value in recipient
-                    if str(value).strip()
-                ]
-            else:
-                recipients = [
-                    value.strip()
-                    for value in str(recipient or "").split(",")
-                    if value.strip()
-                ]
+            recipients = self._normalize_addresses(recipient)
+            cc_recipients = [
+                addr for addr in self._normalize_addresses(cc)
+                if addr.lower() not in {r.lower() for r in recipients}
+            ]
 
             if not recipients:
                 logger.warning("No hay destinatarios validos para el correo")
@@ -75,6 +79,8 @@ class EmailService:
             msg = MIMEMultipart()
             msg["From"] = self.email_from
             msg["To"] = ", ".join(recipients)
+            if cc_recipients:
+                msg["Cc"] = ", ".join(cc_recipients)
             msg["Subject"] = subject
 
             msg.attach(MIMEText(body, "html"))
@@ -102,9 +108,12 @@ class EmailService:
                 server.starttls()
                 server.ehlo(self.helo_name)
                 server.login(self.email_user, self.email_password)
-                server.send_message(msg, to_addrs=recipients)
+                server.send_message(msg, to_addrs=recipients + cc_recipients)
 
-            logger.info(f"Correo enviado exitosamente a {', '.join(recipients)}")
+            destino = ", ".join(recipients)
+            if cc_recipients:
+                destino += f" (cc: {', '.join(cc_recipients)})"
+            logger.info(f"Correo enviado exitosamente a {destino}")
             return True
 
         except Exception as error:

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Aplicacion principal FastAPI - Sistema de Asignacion de Contratos.
 Punto de entrada de la aplicacion.
 """
@@ -13,6 +13,8 @@ from sqlalchemy import text
 
 from app.api.routes.assignment import router as assignment_router
 from app.api.routes.collection_agency import router as collection_agency_router
+from app.api.routes.reports import router as reports_router
+from app.api.dependencies.security import verify_hmac_signature
 from app.core.config import settings
 from app.database.connections import db_manager
 from app.runtime_config.service import RuntimeConfigService
@@ -46,6 +48,19 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 100)
     logger.info("Iniciando %s v%s", settings.APP_NAME, settings.APP_VERSION)
     logger.info("=" * 100)
+
+    # Validacion de secretos obligatorios: evita arrancar sin proteccion HMAC
+    # en entornos que no sean de desarrollo.
+    if not settings.API_HMAC_SECRET:
+        if settings.DEBUG:
+            logger.warning(
+                "API_HMAC_SECRET vacio: las firmas HMAC no son seguras (modo DEBUG)."
+            )
+        else:
+            raise RuntimeError(
+                "API_HMAC_SECRET no esta configurado. Defina la variable de entorno "
+                "antes de arrancar en produccion (ver .env.example)."
+            )
 
     try:
         logger.info("Verificando conexiones de bases de datos...")
@@ -107,14 +122,26 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(assignment_router)
-app.include_router(collection_agency_router)
+from fastapi import Depends
+
+app.include_router(
+    assignment_router,
+    dependencies=[Depends(verify_hmac_signature)]
+)
+app.include_router(
+    collection_agency_router,
+    dependencies=[Depends(verify_hmac_signature)]
+)
+app.include_router(
+    reports_router,
+    dependencies=[Depends(verify_hmac_signature)]
+)
 
 
 @app.get("/", tags=["root"])

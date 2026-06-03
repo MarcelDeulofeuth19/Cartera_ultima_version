@@ -62,3 +62,17 @@ Thumbs.db
 # Docker persistent data (mantener solo estructura)
 docker-data/internal-config-db/*
 !docker-data/internal-config-db/.gitkeep
+
+# Informes generados en la raiz (datos, no versionar)
+/*.csv
+
+# Cobertura de pruebas
+coverage.xml
+.coverage
+htmlcov/
+
+# Entornos virtuales temporales de pruebas
+.venv_test/
+
+# Ejemplo con secreto embebido (NO versionar; rotar y eliminar)
+hmac_client_example.py

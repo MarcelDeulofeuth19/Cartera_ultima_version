@@ -1,0 +1,25 @@
+[tool.pytest.ini_options]
+# Raiz del codigo en sys.path para que "import app..." funcione sin instalar el paquete.
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q --strict-markers"
+markers = [
+    "unit: pruebas unitarias puras (sin BD ni red)",
+    "integration: pruebas que requieren base de datos efimera",
+    "e2e: pruebas de extremo a extremo sobre la API (TestClient)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+omit = [
+    "*/__pycache__/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

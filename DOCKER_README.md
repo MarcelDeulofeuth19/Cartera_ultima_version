@@ -193,7 +193,7 @@ Configuradas en `docker-compose.yml`:
 environment:
   - MYSQL_HOST=57.130.40.1
   - MYSQL_USER=alo_estadisticas
-  - POSTGRES_HOST=3.95.195.63
+  - POSTGRES_HOST=172.31.21.63
   - DAYS_THRESHOLD=61
   # etc...
 ```
