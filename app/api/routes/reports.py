@@ -13,14 +13,21 @@ router = APIRouter(
 
 @router.get("/download/{house_key}", summary="Descargar reporte por casa de cobranza")
 async def download_report(
-    house_key: str, 
+    house_key: str,
     background_tasks: BackgroundTasks,
-    format: str = "excel"
+    format: str = "excel",
+    product: str = None,
 ):
     """
     Descarga el reporte Excel generado más recientemente para la casa indicada.
     Si format=json, retorna el contenido del Excel en formato JSON.
     Valores validos para house_key: 'cobyser', 'serlefin'.
+
+    Parametro NUEVO (opcional) product, solo aplica con format=json:
+      - (omitido) o 'phone' -> primera hoja (Phone). Comportamiento ACTUAL, sin cambios.
+      - 'twist1' / 'twist2'  -> esa hoja del Excel (lista de registros).
+      - 'all'                -> {"Phone": [...], "Twist1": [...], "Twist2": [...]}.
+    Con format=excel se descarga el archivo completo (las 3 hojas) como hasta ahora.
     """
     valid_houses = {"cobyser", "serlefin"}
     if house_key.lower() not in valid_houses:
@@ -65,11 +72,36 @@ async def download_report(
     if format == "json":
         try:
             import pandas as pd
-            import math
-            df = pd.read_excel(latest_file)
-            df = df.replace({float('nan'): None})
-            data = df.to_dict(orient="records")
-            return JSONResponse(content=data)
+
+            def _records(frame):
+                return frame.replace({float('nan'): None}).to_dict(orient="records")
+
+            requested = (product or "phone").strip().lower()
+
+            # Comportamiento ACTUAL (sin product o 'phone'): primera hoja del Excel.
+            if requested == "phone":
+                df = pd.read_excel(latest_file)
+                return JSONResponse(content=_records(df))
+
+            # NUEVO: todas las hojas en un solo objeto por nombre de hoja.
+            if requested == "all":
+                sheets = pd.read_excel(latest_file, sheet_name=None)
+                return JSONResponse(content={name: _records(frame) for name, frame in sheets.items()})
+
+            # NUEVO: una hoja Twist puntual. Si el archivo es viejo (1 sola hoja)
+            # y no existe la hoja, se devuelve lista vacia (no rompe).
+            sheet_by_product = {"twist1": "Twist1", "twist2": "Twist2"}
+            if requested in sheet_by_product:
+                try:
+                    df = pd.read_excel(latest_file, sheet_name=sheet_by_product[requested])
+                except (ValueError, KeyError):
+                    return JSONResponse(content=[])
+                return JSONResponse(content=_records(df))
+
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "product invalido. Use 'phone', 'twist1', 'twist2' o 'all'."}
+            )
         except Exception as e:
             return JSONResponse(
                 status_code=500,
@@ -102,7 +134,8 @@ async def get_current_assignments():
     today_str = datetime.now(tz_bogota).strftime("%Y-%m-%d")
     
     # El archivo se guardara en la raiz del proyecto
-    cache_filename = f"asignaciones_cache_{today_str}.json"
+    # v2: incluye conteo de Twist1/Twist2 (invalida cache viejo sin Twist).
+    cache_filename = f"asignaciones_cache_v2_{today_str}.json"
     cache_path = Path(cache_filename)
     
     # Si el archivo de hoy ya existe, servirlo (evita la consulta a DB)
@@ -120,16 +153,55 @@ async def get_current_assignments():
     logger.info("Caché no encontrado para hoy. Consultando la base de datos por primera vez...")
     
     with db_manager.get_postgres_session() as postgres_session:
+        from sqlalchemy import text
+
         service = AssignmentService(mysql_session=None, postgres_session=postgres_session)
         assignments = service.get_current_assignments()
-        
-        # Convertir sets a listas para JSON
+
+        # Convertir sets a listas para JSON (Phone, sin cambios)
         result = {
             str(user_id): list(contracts)
             for user_id, contracts in assignments.items()
         }
-        
-        payload = {"success": True, "date": today_str, "data": result}
+
+        # NUEVO: conteo Twist1/Twist2 por casa (45/81), aditivo.
+        def _twist_counts(table: str) -> dict:
+            try:
+                rows = postgres_session.execute(text(
+                    f"SELECT user_id, COUNT(*) FROM alocreditindicators.{table} "
+                    f"WHERE user_id IN (45, 81) GROUP BY user_id"
+                )).fetchall()
+                return {str(int(u)): int(n) for u, n in rows}
+            except Exception as twist_err:
+                logger.warning("No se pudo contar %s: %s", table, twist_err)
+                return {}
+
+        twist1 = _twist_counts("contract_advisors_twist")
+        twist2 = _twist_counts("contract_advisors_twist2")
+
+        ph_45, ph_81 = len(result.get("45", [])), len(result.get("81", []))
+        t1_45, t1_81 = twist1.get("45", 0), twist1.get("81", 0)
+        t2_45, t2_81 = twist2.get("45", 0), twist2.get("81", 0)
+
+        resumen = {
+            "phone": {"cobyser": ph_45, "serlefin": ph_81, "total": ph_45 + ph_81},
+            "twist1": {"cobyser": t1_45, "serlefin": t1_81, "total": t1_45 + t1_81},
+            "twist2": {"cobyser": t2_45, "serlefin": t2_81, "total": t2_45 + t2_81},
+            "total": {
+                "cobyser": ph_45 + t1_45 + t2_45,
+                "serlefin": ph_81 + t1_81 + t2_81,
+                "total": ph_45 + ph_81 + t1_45 + t1_81 + t2_45 + t2_81,
+            },
+        }
+
+        payload = {
+            "success": True,
+            "date": today_str,
+            "data": result,            # Phone (compatibilidad, sin cambios)
+            "twist1": twist1,           # NUEVO
+            "twist2": twist2,           # NUEVO
+            "resumen": resumen,         # NUEVO: conteo combinado por casa/producto
+        }
         
         # Guardar en disco para futuras consultas hoy
         try:

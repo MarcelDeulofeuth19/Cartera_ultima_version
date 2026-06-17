@@ -1328,7 +1328,17 @@ ORDER BY c.id ASC;
                 contracts_81=contracts_81,
                 contracts_45=contracts_45,
             )
-            
+
+            # Conteo Twist (aditivo): no altera las llaves Phone existentes.
+            try:
+                t1_45 = len(self.get_assigned_twist1_for_house(settings.COBYSER_USERS))
+                t1_81 = len(self.get_assigned_twist1_for_house(settings.SERLEFIN_USERS))
+                t2_45 = len(self.get_assigned_twist2_for_house(settings.COBYSER_USERS))
+                t2_81 = len(self.get_assigned_twist2_for_house(settings.SERLEFIN_USERS))
+            except Exception as twist_err:
+                logger.warning("No se pudo contar Twist en metricas: %s", twist_err)
+                t1_45 = t1_81 = t2_45 = t2_81 = 0
+
             return {
                 'total': total,
                 'serlefin': len(contracts_81),
@@ -1341,6 +1351,16 @@ ORDER BY c.id ASC;
                 'manual_fixed_81': manual_fixed_81,
                 'manual_fixed_45': manual_fixed_45,
                 'bucket_distribution': bucket_distribution,
+                # --- NUEVO: conteo por producto (Phone es el de arriba) ---
+                'productos': {
+                    'phone': {'cobyser': len(contracts_45), 'serlefin': len(contracts_81),
+                              'total': total},
+                    'twist1': {'cobyser': t1_45, 'serlefin': t1_81, 'total': t1_45 + t1_81},
+                    'twist2': {'cobyser': t2_45, 'serlefin': t2_81, 'total': t2_45 + t2_81},
+                },
+                'total_cobyser_todos': len(contracts_45) + t1_45 + t2_45,
+                'total_serlefin_todos': len(contracts_81) + t1_81 + t2_81,
+                'total_todos_productos': total + t1_45 + t1_81 + t2_45 + t2_81,
             }
             
         except Exception as e:
