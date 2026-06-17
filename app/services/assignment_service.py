@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Set, Any, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy.orm import Session
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, or_, text
 from app.core.config import settings
 from app.core.dpd import ASSIGNMENT_DPD_ORDER, get_assignment_dpd_range, get_dpd_range
 from app.database.models import ContractAdvisor
@@ -51,6 +51,7 @@ class AssignmentService:
         self.runtime_config_service = RuntimeConfigService()
         self._estado_actual_column_ready = False
         self._history_dpd_actual_column_ready = False
+        self._producto_column_ready = False
 
     def _require_contract_service(self) -> ContractService:
         """Devuelve ContractService o falla si no hay sesion MySQL."""
@@ -159,6 +160,56 @@ class AssignmentService:
             logger.warning(
                 "No se pudo asegurar columna dpd_actual en historial. "
                 "Se continuara sin sincronizar dpd_actual en esta corrida: %s",
+                error,
+            )
+            return False
+
+    def _ensure_producto_column(self) -> bool:
+        """
+        Garantiza la columna 'producto' en contract_advisors y su historial.
+        Backfill: filas existentes (NULL) se marcan 'PHONE' para no cambiar el
+        comportamiento historico.
+        """
+        if self._producto_column_ready:
+            return True
+        try:
+            self.postgres_session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            self.postgres_session.execute(text("SET LOCAL statement_timeout = '15s'"))
+            for table in ("contract_advisors", "contract_advisors_history"):
+                self.postgres_session.execute(
+                    text(
+                        f"""
+                        ALTER TABLE alocreditindicators.{table}
+                        ADD COLUMN IF NOT EXISTS producto VARCHAR(20)
+                        """
+                    )
+                )
+                self.postgres_session.execute(
+                    text(
+                        f"""
+                        UPDATE alocreditindicators.{table}
+                        SET producto = 'PHONE'
+                        WHERE producto IS NULL
+                        """
+                    )
+                )
+            self.postgres_session.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_contract_advisors_producto
+                    ON alocreditindicators.contract_advisors (producto)
+                    """
+                )
+            )
+            self.postgres_session.commit()
+            self._producto_column_ready = True
+            logger.info("Columna 'producto' lista en contract_advisors (+historial)")
+            return True
+        except Exception as error:
+            self.postgres_session.rollback()
+            logger.warning(
+                "No se pudo asegurar columna 'producto' sin bloqueo. "
+                "Se continua asumiendo PHONE: %s",
                 error,
             )
             return False
@@ -642,20 +693,29 @@ class AssignmentService:
         contracts_days_map: Dict[int, int],
         tipo: str = "ASIGNACION",
         states_map: Optional[Dict[int, str]] = None,
+        tipo_map: Optional[Dict[int, str]] = None,
+        producto: str = "PHONE",
     ) -> Dict[int, Dict[str, Any]]:
         """
         Construye metadatos de historial por contrato usando dias de atraso.
+
+        tipo_map permite sobrescribir el 'tipo' por contrato (p.ej. 'CEDULAS_IMPAR'
+        para la franja Cobyser); el resto usa el 'tipo' por defecto del lote.
+        producto etiqueta el historial (PHONE/TWIST1/TWIST2).
         """
         metadata: Dict[int, Dict[str, Any]] = {}
         states_map = states_map or {}
+        tipo_map = tipo_map or {}
         for contract_id, days in contracts_days_map.items():
+            contract_id_int = int(contract_id)
             days_int = int(days) if days is not None else None
-            metadata[int(contract_id)] = {
-                "tipo": tipo,
+            metadata[contract_id_int] = {
+                "tipo": str(tipo_map.get(contract_id_int, tipo)),
                 "dias_atraso_inicial": days_int,
                 "dpd_inicial": get_dpd_range(days_int),
                 "dpd_actual": get_dpd_range(days_int),
-                "estado_actual": str(states_map.get(int(contract_id), "SIN_ESTADO")),
+                "estado_actual": str(states_map.get(contract_id_int, "SIN_ESTADO")),
+                "producto": producto,
             }
         return metadata
     
@@ -761,24 +821,37 @@ class AssignmentService:
             self.postgres_session.rollback()
             raise
 
-    def get_current_assignments(self) -> Dict[int, Set[int]]:
+    def get_current_assignments(self, producto: str = "PHONE") -> Dict[int, Set[int]]:
         """
-        Obtiene las asignaciones actuales desde contract_advisors.
-        
+        Obtiene las asignaciones actuales desde contract_advisors para un producto.
+
+        Para PHONE se incluyen filas con producto NULL (compatibilidad con datos
+        historicos previos a la columna 'producto').
+
         Returns:
             Diccionario {user_id: set(contract_ids)}
         """
-        logger.info("Consultando asignaciones actuales...")
-        
+        logger.info("Consultando asignaciones actuales (producto=%s)...", producto)
+
         current_assignments = {user_id: set() for user_id in settings.USER_IDS}
-        
+
         try:
-            assignments = self.postgres_session.query(
+            query = self.postgres_session.query(
                 ContractAdvisor.user_id,
                 ContractAdvisor.contract_id,
             ).filter(
                 ContractAdvisor.user_id.in_(settings.USER_IDS)
-            ).all()
+            )
+            if producto == "PHONE":
+                query = query.filter(
+                    or_(
+                        ContractAdvisor.producto == "PHONE",
+                        ContractAdvisor.producto.is_(None),
+                    )
+                )
+            else:
+                query = query.filter(ContractAdvisor.producto == producto)
+            assignments = query.all()
 
             for user_id, contract_id in assignments:
                 user_id_int = int(user_id)
@@ -979,9 +1052,18 @@ class AssignmentService:
         assignments: Dict[int, List[int]],
         contracts_days_map: Optional[Dict[int, int]] = None,
         excluded_contract_ids: Optional[Set[int]] = None,
+        tipo_map: Optional[Dict[int, str]] = None,
+        default_tipo: str = "ASIGNACION",
+        producto: str = "PHONE",
     ) -> Dict[str, int]:
         """
         Guarda nuevas asignaciones en contract_advisors y las registra en historial.
+
+        tipo_map permite etiquetar el 'tipo' por contrato en el historial
+        (p.ej. 'CEDULAS_IMPAR' para la franja Cobyser); default_tipo es el tipo
+        del resto del lote. producto particiona la deduplicacion/insercion por
+        producto (PHONE/TWIST1/TWIST2) para que un mismo contract_id pueda existir
+        en mas de un producto sin chocar.
         """
         logger.info("Guardando nuevas asignaciones...")
 
@@ -1023,11 +1105,23 @@ class AssignmentService:
             logger.info(
                 f"Verificando duplicados para {len(eligible_contract_ids)} contratos unicos..."
             )
-            existing_assignments = self.postgres_session.query(
+            existing_query = self.postgres_session.query(
                 ContractAdvisor.contract_id
             ).filter(
                 ContractAdvisor.contract_id.in_(eligible_contract_ids)
-            ).all()
+            )
+            if producto == "PHONE":
+                existing_query = existing_query.filter(
+                    or_(
+                        ContractAdvisor.producto == "PHONE",
+                        ContractAdvisor.producto.is_(None),
+                    )
+                )
+            else:
+                existing_query = existing_query.filter(
+                    ContractAdvisor.producto == producto
+                )
+            existing_assignments = existing_query.all()
 
             existing_contract_ids = set(int(row[0]) for row in existing_assignments)
             rows_to_insert: List[Dict[str, Any]] = []
@@ -1063,6 +1157,7 @@ class AssignmentService:
                             "estado_actual": str(
                                 states_cache.get(contract_id, "PENDIENTE")
                             ),
+                            "producto": producto,
                         }
                     )
                     new_assignments[user_id].append(contract_id)
@@ -1109,15 +1204,17 @@ class AssignmentService:
                 }
                 assignment_metadata = self._build_history_metadata_from_days(
                     days_map,
-                    tipo="ASIGNACION",
+                    tipo=default_tipo,
                     states_map=states_for_history,
+                    tipo_map=tipo_map,
+                    producto=producto,
                 )
 
                 logger.info("Registrando asignaciones en historial...")
                 history_stats = self.history_service.register_assignments(
                     new_assignments,
                     assignment_metadata=assignment_metadata,
-                    default_tipo="ASIGNACION",
+                    default_tipo=default_tipo,
                 )
 
             logger.info("Asignaciones guardadas:")
@@ -1134,6 +1231,92 @@ class AssignmentService:
             logger.error(f"Error al guardar asignaciones: {e}")
             self.postgres_session.rollback()
             raise
+
+    def assign_cobyser_franja(
+        self,
+        excluded_from_assignment: Optional[Set[int]] = None,
+        producto: str = "PHONE",
+    ) -> Dict[str, Any]:
+        """
+        Asigna la franja Cobyser (dias 31-60: buckets 31_45 y 46_60) SOLO a
+        Cobyser (user 45) y SOLO a cedulas con digito final impar (1,3,5,7,9),
+        para el producto indicado (PHONE o TWIST1).
+
+        Es una pasada ADITIVA e independiente del balanceo 60/40 de 61-240:
+        - El balanceo principal solo consulta >=61 dias, asi que no hay solape.
+        - save_assignments deduplica contra contract_advisors (por producto), por
+          lo que un contrato 31-60 impar ya asignado NO se mueve (solo nuevos).
+        - El historial se etiqueta con tipo='CEDULAS_IMPAR'.
+        """
+        stats: Dict[str, Any] = {
+            "enabled": bool(settings.FRANJA_COBYSER_ENABLED),
+            "producto": producto,
+            "candidates": 0,
+            "assigned": 0,
+            "insert_stats": {},
+        }
+        if not settings.FRANJA_COBYSER_ENABLED:
+            logger.info("Franja Cobyser deshabilitada por configuracion (FRANJA_COBYSER_ENABLED=False).")
+            return stats
+
+        cobyser_user_id = int(settings.FRANJA_COBYSER_USER_ID)
+        excluded = {
+            int(contract_id)
+            for contract_id in (excluded_from_assignment or set())
+            if int(contract_id) > 0
+        }
+
+        contract_service = self._require_contract_service()
+        if producto == "TWIST1":
+            franja_contracts = contract_service.get_twist1_franja_cobyser_odd_contracts(
+                min_days=settings.FRANJA_COBYSER_MIN_DAYS,
+                max_days=settings.FRANJA_COBYSER_MAX_DAYS,
+                excluded_contract_ids=excluded or None,
+            )
+        else:
+            franja_contracts = contract_service.get_franja_cobyser_odd_contracts(
+                min_days=settings.FRANJA_COBYSER_MIN_DAYS,
+                max_days=settings.FRANJA_COBYSER_MAX_DAYS,
+                excluded_contract_ids=excluded or None,
+            )
+        stats["candidates"] = len(franja_contracts)
+        if not franja_contracts:
+            logger.info(
+                "Franja Cobyser (%s): no hay contratos 31-60 con cedula impar para asignar.",
+                producto,
+            )
+            return stats
+
+        franja_assignments: Dict[int, List[int]] = {
+            cobyser_user_id: [int(contract["contract_id"]) for contract in franja_contracts]
+        }
+        franja_days_map: Dict[int, int] = {
+            int(contract["contract_id"]): int(contract["days_overdue"])
+            for contract in franja_contracts
+        }
+        tipo_map: Dict[int, str] = {
+            int(contract["contract_id"]): "CEDULAS_IMPAR"
+            for contract in franja_contracts
+        }
+
+        insert_stats = self.save_assignments(
+            franja_assignments,
+            contracts_days_map=franja_days_map,
+            excluded_contract_ids=excluded or None,
+            tipo_map=tipo_map,
+            default_tipo="CEDULAS_IMPAR",
+            producto=producto,
+        )
+        stats["assigned"] = int(insert_stats.get("inserted_total", 0))
+        stats["insert_stats"] = insert_stats
+        logger.info(
+            "Franja Cobyser (%s) asignada a user %s: candidatos=%s, insertados=%s",
+            producto,
+            cobyser_user_id,
+            stats["candidates"],
+            stats["assigned"],
+        )
+        return stats
 
     def ensure_fixed_contracts_assigned(
         self,
@@ -1357,6 +1540,9 @@ class AssignmentService:
             "contracts_to_assign": [],
             "balance_stats": {},
             "insert_stats": {},
+            "franja_cobyser_stats": {},
+            "twist1_stats": {},
+            "twist2_stats": {},
             "estado_actual_update_stats": {},
             "final_assignments": {},
             "runtime_config": {},
@@ -1372,6 +1558,8 @@ class AssignmentService:
 
         try:
             runtime_config = self._load_runtime_assignment_config()
+            # Asegura columna 'producto' (backfill PHONE) antes de cualquier escritura.
+            self._ensure_producto_column()
             effective_min_days = max(
                 int(runtime_config.min_days),
                 int(settings.DAYS_THRESHOLD),
@@ -1487,6 +1675,33 @@ class AssignmentService:
                 excluded_contract_ids=blocked_contract_ids,
             )
             results["insert_stats"] = insert_stats
+
+            # Franja Cobyser (31-60 dias, cedula impar): pasada aditiva e
+            # independiente del balanceo 60/40. Solo Cobyser (45), Serlefin 0%.
+            results["franja_cobyser_stats"] = self.assign_cobyser_franja(
+                excluded_from_assignment=excluded_from_assignment,
+                producto="PHONE",
+            )
+
+            # ============================================================
+            # Productos Twist 1.0 y Twist 2.0 -> tablas propias dedicadas
+            # (contract_advisors_twist / contract_advisors_twist2). Mismas
+            # reglas que la imagen (franja 31-60 impar -> Cobyser; 61-240 40/60).
+            # Aislado del flujo Phone: un fallo aqui NO aborta la corrida Phone
+            # ya persistida. Import local para evitar dependencia circular.
+            # ============================================================
+            try:
+                from app.services.twist_assignment_service import TwistAssignmentService
+
+                twist_service = TwistAssignmentService(
+                    postgres_session=self.postgres_session,
+                    contract_service=self.contract_service,
+                )
+                results["twist1_stats"] = twist_service.run_twist1()
+                results["twist2_stats"] = twist_service.run_twist2()
+            except Exception as twist_error:
+                logger.error("Error en asignacion Twist (PHONE no afectado): %s", twist_error)
+                results["twist_error"] = str(twist_error)
 
             current_assignments_after_insert = self.get_current_assignments()
             estado_stats = self.refresh_estado_actual_for_assignments(

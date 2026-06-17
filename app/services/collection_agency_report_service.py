@@ -589,6 +589,40 @@ WHERE c.id IN ({lista_contratos})
 ORDER BY c.id ASC;
 """
     
+    def _write_multiproduct_excel(self, df_phone, file_path: str, user_id: int) -> None:
+        """
+        Escribe el Excel con UNA HOJA POR PRODUCTO (Phone/Twist1/Twist2),
+        reutilizando los constructores de ReportServiceExtended para Twist.
+        Aislado: un fallo en Twist no rompe la hoja Phone.
+        """
+        t1 = pd.DataFrame()
+        t2 = pd.DataFrame()
+        try:
+            from app.services.report_service_extended import ReportServiceExtended
+
+            ext = ReportServiceExtended()
+
+            def _fin(tdf):
+                if tdf is None or tdf.empty:
+                    return pd.DataFrame()
+                tdf = tdf.copy()
+                tdf['Tipo'] = ''
+                if user_id == 45 and 'rango' in tdf.columns:
+                    es_franja = tdf['rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+                    tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+                tdf.insert(0, 'NIT', '901546410-9')
+                return tdf
+
+            t1 = _fin(ext._build_twist1_report_dataframe(ext.get_assigned_twist1_for_house([user_id])))
+            t2 = _fin(ext._build_twist2_report_dataframe(ext.get_assigned_twist2_for_house([user_id])))
+        except Exception as twist_err:
+            logger.error("Error hojas Twist (collection_agency) user %s: %s", user_id, twist_err)
+
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            df_phone.to_excel(writer, sheet_name='Phone', index=False)
+            t1.to_excel(writer, sheet_name='Twist1', index=False)
+            t2.to_excel(writer, sheet_name='Twist2', index=False)
+
     def generate_reports(self) -> Dict[str, str]:
         """
         Genera informes de casa de cobranza para usuarios 81 (SERLEFIN) y 45 (COBYSER)
@@ -664,13 +698,16 @@ ORDER BY c.id ASC;
                     if col in df_81.columns:
                         df_81 = df_81.drop(columns=[col])
 
+                # Columna "Tipo": vacia en Serlefin (la franja 31-60 es solo Cobyser).
+                df_81['Tipo'] = ''
+
                 # Agregar campo NIT al inicio
                 df_81.insert(0, 'NIT', '901546410-9')
 
-                # Guardar Excel
+                # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
                 file_name_81 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES.xlsx"
                 file_path_81 = os.path.join(reports_dir, file_name_81)
-                df_81.to_excel(file_path_81, index=False)
+                self._write_multiproduct_excel(df_81, file_path_81, 81)
                 
                 result['serlefin_file'] = file_path_81
                 logger.info(f"âœ… INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
@@ -719,13 +756,19 @@ ORDER BY c.id ASC;
                 if 'Comision' in df_45.columns:
                     df_45['Comision'] = 30
 
+                # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar".
+                df_45['Tipo'] = ''
+                if 'Rango' in df_45.columns:
+                    es_franja = df_45['Rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+                    df_45.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+
                 # Agregar campo NIT al inicio
                 df_45.insert(0, 'NIT', '901546410-9')
 
-                # Guardar Excel
+                # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
                 file_name_45 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES Cobyser.xlsx"
                 file_path_45 = os.path.join(reports_dir, file_name_45)
-                df_45.to_excel(file_path_45, index=False)
+                self._write_multiproduct_excel(df_45, file_path_45, 45)
                 
                 result['cobyser_file'] = file_path_45
                 logger.info(f"âœ… INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")

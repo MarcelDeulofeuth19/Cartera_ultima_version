@@ -54,6 +54,7 @@ class HistoryService:
         estado_actual = str(metadata.get("estado_actual") or "SIN_ESTADO").strip()
         if not estado_actual:
             estado_actual = "SIN_ESTADO"
+        producto = str(metadata.get("producto") or "PHONE").strip() or "PHONE"
 
         return {
             "tipo": tipo,
@@ -61,6 +62,7 @@ class HistoryService:
             "dpd_actual": dpd_actual,
             "dias_atraso_inicial": dias_atraso_inicial,
             "estado_actual": estado_actual,
+            "producto": producto,
         }
 
     def _resolve_terminal_fields(
@@ -161,6 +163,7 @@ class HistoryService:
                         "dias_atraso_inicial": initial_fields["dias_atraso_inicial"],
                         "dias_atraso_terminal": None,
                         "estado_actual": initial_fields["estado_actual"],
+                        "producto": initial_fields["producto"],
                     }
                 )
 

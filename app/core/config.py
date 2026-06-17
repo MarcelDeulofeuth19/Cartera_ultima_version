@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     DAYS_THRESHOLD: int = 61      # Días de atraso mínimos (casas de cobranza)
     MAX_DAYS_THRESHOLD: int = 240  # Días de atraso máximos (casas de cobranza)
 
+    # Franja Cobyser (días 31-60): buckets 31_45 y 46_60.
+    # Se asignan SOLO a Cobyser (user 45) y SOLO a cédulas con dígito final
+    # impar (1,3,5,7,9). Serlefín 0%. Etiqueta de tipo: "Cédulas Impar".
+    FRANJA_COBYSER_ENABLED: bool = True
+    FRANJA_COBYSER_MIN_DAYS: int = 31
+    FRANJA_COBYSER_MAX_DAYS: int = 60
+    FRANJA_COBYSER_USER_ID: int = 45
+
     # Efectos que determinan contratos fijos
     EFFECT_ACUERDO_PAGO: str = "acuerdo_de_pago"
     EFFECT_PAGO_TOTAL: str = "pago_total"
@@ -167,11 +175,33 @@ class Settings(BaseSettings):
     REPORTS_EXT_IND_PORT: int = 5432
     REPORTS_EXT_IND_SCHEMA: str = "alocreditindicators"
 
+    # Twist 2.0: PostgreSQL CBS (core de credito, dpd) y PDS (datos del cliente).
+    # Credenciales se cargan desde el .env (placeholders en .env.example).
+    CBS_DB_HOST: str = ""
+    CBS_DB_PORT: int = 5434
+    CBS_DB_USER: str = ""
+    CBS_DB_PASSWORD: str = ""
+    CBS_DB_NAME: str = "cbs"
+    CBS_DB_CONNECT_TIMEOUT: int = 15
+
+    PDS_DB_HOST: str = ""
+    PDS_DB_PORT: int = 5435
+    PDS_DB_USER: str = ""
+    PDS_DB_PASSWORD: str = ""
+    PDS_DB_NAME: str = "PDS"
+    PDS_DB_CONNECT_TIMEOUT: int = 15
+
+    # Producto Twist 2.0 (su asignacion vive en tabla propia, no en contract_advisors)
+    TWIST2_ENABLED: bool = True
+
     # Configuración dinámica de asignación (persistida con auditoría)
     DEFAULT_SERLEFIN_PERCENT: float = 60.0
     DEFAULT_COBYSER_PERCENT: float = 40.0
     DEFAULT_ASSIGNMENT_MIN_DAYS: int = 61
     DEFAULT_ASSIGNMENT_MAX_DAYS: int = 240
+
+    # Actor por defecto para auditoría de configuración dinámica (fallback).
+    ADMIN_DEFAULT_AUDIT_ACTOR: str = "system"
 
     # Base interna de configuración/auditoría.
     # Credenciales obligatorias por entorno (ver .env.example). Sin valor por defecto

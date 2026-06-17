@@ -32,6 +32,13 @@ ASSIGNMENT_DPD_ORDER = (
     "0",
 )
 
+# Buckets de la "franja Cobyser" (dias 31-60): se asignan SOLO a Cobyser (45)
+# y SOLO a cedulas cuyo digito final es impar (1, 3, 5, 7, 9). Serlefin 0%.
+FRANJA_COBYSER_BUCKETS = ("31_45", "46_60")
+
+# Digitos finales de cedula considerados "impares" para la franja Cobyser.
+ODD_CEDULA_DIGITS = frozenset("13579")
+
 
 def get_dpd_range(days_overdue: Optional[int]) -> Optional[str]:
     """
@@ -69,6 +76,20 @@ def get_dpd_range(days_overdue: Optional[int]) -> Optional[str]:
     if days_overdue <= 0:
         return "0"
     return "1_3"
+
+
+def is_cedula_impar(documento: Optional[str]) -> bool:
+    """
+    Indica si una cedula/documento termina en digito impar (1, 3, 5, 7, 9).
+
+    La paridad se evalua sobre el documento normalizado a SOLO digitos, para
+    ignorar puntos, guiones o espacios. Documentos vacios o sin digitos se
+    consideran NO impares (no entran a la franja Cobyser).
+    """
+    digits = "".join(ch for ch in str(documento or "") if ch.isdigit())
+    if not digits:
+        return False
+    return digits[-1] in ODD_CEDULA_DIGITS
 
 
 def get_assignment_dpd_range(days_overdue: Optional[int]) -> Optional[str]:

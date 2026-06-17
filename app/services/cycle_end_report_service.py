@@ -52,7 +52,7 @@ OUTPUT_COLUMNS = [
     "cantidad_cuotas_sin_pagar", "vr_cuotas_sin_pagar",
     "cantidad_cuotas_pagados", "Valor_cuotas_pagadas",
     "Dias_iniciales_Mes", "Rango Inicial",
-    "Dias_Actual", "Rango_Actual",
+    "Dias_Actual", "Rango_Actual", "Tipo",
     "Ingreso_Mes_Actual", "Fecha_ingreso_actual",
     "MOTIVO", "Pais", "intentos",
     "Fecha_gestion", "Accion", "Resultado", "Efecto", "Mejor_gestion",
@@ -367,6 +367,52 @@ FULL OUTER JOIN Intentos it ON it.contract_id = rm.contract_id
 # --------------------------------------------------------------------------- #
 # Generacion del CSV por casa
 # --------------------------------------------------------------------------- #
+def _build_twist_rows_for_cycle(user_ids: List[int], house_key: str) -> "pd.DataFrame":
+    """
+    Filas Twist1/Twist2 para el CSV mensual, en formato OUTPUT_COLUMNS y con
+    columna 'Producto'. Reutiliza los constructores de ReportServiceExtended
+    (cedula/dias/rango/cliente); las columnas de gestion/pago quedan vacias.
+    """
+    rows: List[dict] = []
+    try:
+        from app.services.report_service_extended import ReportServiceExtended
+
+        ext = ReportServiceExtended()
+        is_cobyser = (house_key == "cobyser")
+        df1 = ext._build_twist1_report_dataframe(ext.get_assigned_twist1_for_house(user_ids))
+        df2 = ext._build_twist2_report_dataframe(ext.get_assigned_twist2_for_house(user_ids))
+        for df in (df1, df2):
+            if df is None or df.empty:
+                continue
+            for _, r in df.iterrows():
+                rango = str(r.get("rango") or "")
+                tipo = "Cédulas Impar" if (is_cobyser and rango in ("31_60", "31_45", "46_60")) else ""
+                rows.append({
+                    "Llave": r.get("llave"),
+                    "Producto": r.get("producto"),
+                    "Contrato": r.get("contrato_x"),
+                    "Cedula": r.get("cedula"),
+                    "Dias_iniciales_Mes": r.get("dias_iniciales_mes"),
+                    "Dias_Actual": r.get("dias_iniciales_mes"),
+                    "Rango Inicial": rango,
+                    "Rango_Actual": rango,
+                    "Tipo": tipo,
+                    "Ingreso_Mes_Actual": 0,
+                    "Pais": "CO",
+                    "Telefono": r.get("telefono"),
+                })
+    except Exception as e:
+        logger.error("cycle_end: error construyendo filas Twist: %s", e)
+
+    if not rows:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    tdf = pd.DataFrame(rows)
+    for col in OUTPUT_COLUMNS:
+        if col not in tdf.columns:
+            tdf[col] = ""
+    return tdf[OUTPUT_COLUMNS]
+
+
 def generate_house_csv(
     house_key: str,
     prim_dia: date,
@@ -419,6 +465,13 @@ def generate_house_csv(
     merged["Rango Inicial"] = merged["Dias_iniciales_Mes"].apply(to_rango)
     merged["Rango_Actual"] = merged["Dias_Actual"].apply(to_rango)
 
+    # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar". Solo Cobyser;
+    # se evalua por el rango inicial (buckets 31_45/46_60). Vacia en el resto.
+    merged["Tipo"] = ""
+    if house_key == "cobyser":
+        es_franja = merged["Rango Inicial"].astype(str).isin({"31_45", "46_60", "31_60"})
+        merged.loc[es_franja, "Tipo"] = "Cédulas Impar"
+
     merged["Ingreso_Mes_Actual"] = merged.get("monto_mes", 0).fillna(0)
     ultimo_pago = pd.to_datetime(merged.get("ultimo_pago_mes"), errors="coerce")
     merged["Fecha_ingreso_actual"] = ultimo_pago.dt.strftime("%Y-%m-%d")
@@ -437,6 +490,12 @@ def generate_house_csv(
     merged["Telefono"] = merged.get("telefono")
 
     final = merged[OUTPUT_COLUMNS].copy()
+
+    # Anexar filas Twist1/Twist2 (mismo CSV, distinguidas por columna 'Producto').
+    twist_rows = _build_twist_rows_for_cycle(user_ids, house_key)
+    if not twist_rows.empty:
+        final = pd.concat([final, twist_rows], ignore_index=True)
+        logger.info("%s: +%d filas Twist en el CSV mensual", label, len(twist_rows))
 
     fecha_str = fecha_tope.strftime("%d-%m-%y")
     output_dir.mkdir(parents=True, exist_ok=True)

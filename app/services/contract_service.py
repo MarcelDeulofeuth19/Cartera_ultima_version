@@ -9,6 +9,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.dpd import is_cedula_impar
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,308 @@ class ContractService:
         except Exception as e:
             logger.error(f"Error al consultar contratos: {e}")
             raise
+
+    def get_customer_documents_for_contracts(
+        self,
+        contract_ids: List[int],
+    ) -> Dict[int, str]:
+        """
+        Obtiene la cedula/documento (customer.dni) por contrato.
+
+        Camino: contract -> application -> customer (mismo JOIN validado en
+        get_contract_ids_by_customer_documents). Si un contrato mapea a mas de
+        un customer se toma MAX(c2.dni) para no duplicar filas.
+
+        Returns:
+            Diccionario {contract_id: dni_crudo}
+        """
+        if not contract_ids:
+            return {}
+
+        document_map: Dict[int, str] = {}
+
+        try:
+            batch_size = 1000
+            for i in range(0, len(contract_ids), batch_size):
+                batch = contract_ids[i : i + batch_size]
+                batch_ids = ",".join(str(int(contract_id)) for contract_id in batch)
+
+                query = f"""
+                SELECT
+                    c.id AS contract_id,
+                    MAX(c2.dni) AS dni
+                FROM contract c
+                INNER JOIN application a ON a.id = c.application_id
+                INNER JOIN customer c2 ON c2.id = a.customer_id
+                WHERE c.id IN ({batch_ids})
+                GROUP BY c.id
+                """
+
+                result = self.mysql_session.execute(text(query))
+                for row in result:
+                    document_map[int(row[0])] = row[1]
+
+            return document_map
+
+        except Exception as e:
+            logger.error(f"Error al consultar cedulas por contrato: {e}")
+            raise
+
+    def get_franja_cobyser_odd_contracts(
+        self,
+        min_days: int = None,
+        max_days: int = None,
+        excluded_contract_ids: Optional[Set[int]] = None,
+    ) -> List[Dict]:
+        """
+        Obtiene contratos de la franja Cobyser (por defecto 31-60 dias de atraso)
+        cuya cedula termina en digito impar (1, 3, 5, 7, 9).
+
+        Reutiliza get_contracts_with_arrears para el filtro de dias, exclusiones y
+        lista negra, y agrega la cedula del cliente para evaluar la paridad.
+
+        Returns:
+            Lista de dicts con las mismas claves que get_contracts_with_arrears
+            mas 'cedula' (normalizada a solo digitos).
+        """
+        if min_days is None:
+            min_days = settings.FRANJA_COBYSER_MIN_DAYS
+        if max_days is None:
+            max_days = settings.FRANJA_COBYSER_MAX_DAYS
+
+        franja_contracts = self.get_contracts_with_arrears(
+            min_days=min_days,
+            max_days=max_days,
+            excluded_contract_ids=excluded_contract_ids,
+        )
+        if not franja_contracts:
+            return []
+
+        contract_ids = [int(contract["contract_id"]) for contract in franja_contracts]
+        document_map = self.get_customer_documents_for_contracts(contract_ids)
+
+        odd_contracts: List[Dict] = []
+        for contract in franja_contracts:
+            contract_id = int(contract["contract_id"])
+            raw_document = document_map.get(contract_id)
+            if not is_cedula_impar(raw_document):
+                continue
+            enriched = dict(contract)
+            enriched["cedula"] = self.normalize_customer_document(raw_document)
+            odd_contracts.append(enriched)
+
+        logger.info(
+            "Franja Cobyser %s-%s dias: %s contratos en rango, %s con cedula impar",
+            min_days,
+            max_days,
+            len(franja_contracts),
+            len(odd_contracts),
+        )
+        return odd_contracts
+
+    # ------------------------------------------------------------------
+    # Twist 1.0 (MySQL alocreditprod, tablas con prefijo twist_).
+    # Misma estructura que Phone pero: amortizacion -> twist_contract_amortization
+    # (status mora = 3 'Atrasado'), contrato -> twist_contract
+    # (excluir status 5 'Anulado' / 7 'Fraude'), y cedula via
+    # twist_contract -> twist_application -> customer.dni (customer es compartida).
+    # ------------------------------------------------------------------
+    def get_twist1_contract_ids_by_customer_documents(
+        self,
+        customer_documents: Set[str],
+    ) -> Set[int]:
+        """Resuelve contratos Twist1 asociados a cedulas/documentos (lista negra)."""
+        normalized_docs = {
+            self.normalize_customer_document(document)
+            for document in (customer_documents or set())
+        }
+        normalized_docs = {doc for doc in normalized_docs if doc}
+        if not normalized_docs:
+            return set()
+        normalized_docs_no_zero = {(doc.lstrip("0") or "0") for doc in normalized_docs}
+
+        statement = text(
+            """
+            SELECT DISTINCT c.id AS contract_id
+            FROM twist_contract c
+            INNER JOIN twist_application a ON a.id = c.twist_application_id
+            INNER JOIN customer c2 ON c2.id = a.customer_id
+            WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                TRIM(COALESCE(c2.dni, '')), '.', ''), '-', ''), ' ', ''), '/', ''), '_', ''), ',', ''
+            ) IN :documents
+            OR TRIM(LEADING '0' FROM REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                TRIM(COALESCE(c2.dni, '')), '.', ''), '-', ''), ' ', ''), '/', ''), '_', ''), ',', ''
+            )) IN :documents_no_zero
+            """
+        ).bindparams(
+            bindparam("documents", expanding=True),
+            bindparam("documents_no_zero", expanding=True),
+        )
+        try:
+            rows = self.mysql_session.execute(
+                statement,
+                {
+                    "documents": sorted(normalized_docs),
+                    "documents_no_zero": sorted(normalized_docs_no_zero),
+                },
+            )
+            return {int(row[0]) for row in rows if row and row[0] is not None}
+        except Exception as error:
+            logger.error("Error resolviendo contratos Twist1 por documento: %s", error)
+            raise
+
+    def get_twist1_contracts_with_arrears(
+        self,
+        min_days: int = None,
+        max_days: int = None,
+        excluded_contract_ids: Optional[Set[int]] = None,
+    ) -> List[Dict]:
+        """Contratos Twist1 con atraso entre min_days y max_days (status mora=3)."""
+        if min_days is None:
+            min_days = settings.DAYS_THRESHOLD
+        if max_days is None:
+            max_days = settings.MAX_DAYS_THRESHOLD
+
+        logger.info(
+            "Consultando contratos Twist1 entre %s y %s dias de atraso...",
+            min_days,
+            max_days,
+        )
+
+        effective_exclusions: Set[int] = set()
+        if excluded_contract_ids:
+            effective_exclusions.update(
+                int(cid) for cid in excluded_contract_ids if int(cid) > 0
+            )
+
+        blocked_docs = {
+            self.normalize_customer_document(doc)
+            for doc in settings.blocked_customer_documents
+        }
+        blocked_docs = {doc for doc in blocked_docs if doc}
+        if blocked_docs:
+            blocked_ids = self.get_twist1_contract_ids_by_customer_documents(blocked_docs)
+            if blocked_ids:
+                logger.info(
+                    "Twist1: excluyendo %s contrato(s) por lista negra de cedula",
+                    len(blocked_ids),
+                )
+                effective_exclusions.update(blocked_ids)
+
+        exclusion_clause = ""
+        filtered_ids = sorted(cid for cid in effective_exclusions if cid > 0)
+        if filtered_ids:
+            exclusion_clause = (
+                "  AND ca.twist_contract_id NOT IN ("
+                + ",".join(str(cid) for cid in filtered_ids)
+                + ")\n"
+            )
+
+        query = f"""
+        SELECT
+            ca.twist_contract_id AS contract_id,
+            DATEDIFF(CURDATE(), MIN(ca.expiration_date)) AS days_overdue,
+            SUM(ca.outstanding_principal) AS total_debt,
+            'MORA' AS status
+        FROM twist_contract_amortization ca
+        INNER JOIN twist_contract c ON c.id = ca.twist_contract_id
+        WHERE ca.expiration_date < CURDATE()
+          AND ca.outstanding_principal > 0
+          AND ca.twist_contract_payment_status_id = 3
+          AND c.twist_contract_status_id NOT IN (5, 7)
+        {exclusion_clause}
+        GROUP BY ca.twist_contract_id
+        HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
+        ORDER BY days_overdue ASC, ca.twist_contract_id ASC
+        """
+
+        try:
+            result = self.mysql_session.execute(text(query))
+            contracts = [
+                {
+                    "contract_id": row[0],
+                    "days_overdue": row[1],
+                    "total_debt": row[2],
+                    "status": row[3],
+                }
+                for row in result
+            ]
+            logger.info("Twist1: %s contratos entre %s y %s dias", len(contracts), min_days, max_days)
+            return contracts
+        except Exception as e:
+            logger.error("Error al consultar contratos Twist1: %s", e)
+            raise
+
+    def get_twist1_customer_documents_for_contracts(
+        self,
+        contract_ids: List[int],
+    ) -> Dict[int, str]:
+        """Cedula (customer.dni) por contrato Twist1."""
+        if not contract_ids:
+            return {}
+        document_map: Dict[int, str] = {}
+        try:
+            batch_size = 1000
+            for i in range(0, len(contract_ids), batch_size):
+                batch = contract_ids[i : i + batch_size]
+                batch_ids = ",".join(str(int(cid)) for cid in batch)
+                query = f"""
+                SELECT c.id AS contract_id, MAX(c2.dni) AS dni
+                FROM twist_contract c
+                INNER JOIN twist_application a ON a.id = c.twist_application_id
+                INNER JOIN customer c2 ON c2.id = a.customer_id
+                WHERE c.id IN ({batch_ids})
+                GROUP BY c.id
+                """
+                result = self.mysql_session.execute(text(query))
+                for row in result:
+                    document_map[int(row[0])] = row[1]
+            return document_map
+        except Exception as e:
+            logger.error("Error al consultar cedulas Twist1: %s", e)
+            raise
+
+    def get_twist1_franja_cobyser_odd_contracts(
+        self,
+        min_days: int = None,
+        max_days: int = None,
+        excluded_contract_ids: Optional[Set[int]] = None,
+    ) -> List[Dict]:
+        """Contratos Twist1 de la franja Cobyser (31-60) con cedula impar."""
+        if min_days is None:
+            min_days = settings.FRANJA_COBYSER_MIN_DAYS
+        if max_days is None:
+            max_days = settings.FRANJA_COBYSER_MAX_DAYS
+
+        franja_contracts = self.get_twist1_contracts_with_arrears(
+            min_days=min_days,
+            max_days=max_days,
+            excluded_contract_ids=excluded_contract_ids,
+        )
+        if not franja_contracts:
+            return []
+
+        contract_ids = [int(c["contract_id"]) for c in franja_contracts]
+        document_map = self.get_twist1_customer_documents_for_contracts(contract_ids)
+
+        odd_contracts: List[Dict] = []
+        for contract in franja_contracts:
+            contract_id = int(contract["contract_id"])
+            raw_document = document_map.get(contract_id)
+            if not is_cedula_impar(raw_document):
+                continue
+            enriched = dict(contract)
+            enriched["cedula"] = self.normalize_customer_document(raw_document)
+            odd_contracts.append(enriched)
+
+        logger.info(
+            "Twist1 franja Cobyser %s-%s: %s en rango, %s con cedula impar",
+            min_days,
+            max_days,
+            len(franja_contracts),
+            len(odd_contracts),
+        )
+        return odd_contracts
 
     def get_contracts_in_range(self, min_days: int, max_days: int) -> List[int]:
         """

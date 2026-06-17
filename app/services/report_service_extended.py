@@ -382,55 +382,20 @@ ORDER BY c.id ASC;
         try:
             logger.info(f"ðŸ“Š Generando reporte para {user_name} ({len(contracts)} contratos)...")
             
-            conn = psycopg2.connect(
-                host=self.db_config_prod['host'],
-                user=self.db_config_prod['user'],
-                password=self.db_config_prod['password'],
-                dbname=self.db_config_prod['database'],
-                port=self.db_config_prod['port'],
-                options=self.db_config_prod['options']
-            )
-            
-            query = self.generate_detailed_query(lista_contratos)
-            df = pd.read_sql(query, conn)
-            conn.close()
-
-            # PostgreSQL normaliza a minusculas aliases sin comillas.
-            cols_by_lower = {str(col).lower(): col for col in df.columns}
-
-            # Detectar contratos asignados que no existen en PostgreSQL produccion
-            # y obtener sus datos desde MySQL (fuente original).
-            contrato_col_temp = cols_by_lower.get('contrato_x')
-            if contrato_col_temp and len(df) < len(contracts):
-                reported_ids = set(df[contrato_col_temp].dropna().astype(int).values)
-                missing_ids = [cid for cid in contracts if cid not in reported_ids]
-                if missing_ids:
-                    logger.warning(
-                        "Reporte %s: %d contratos no existen en PG produccion. "
-                        "Consultando MySQL como fallback.",
-                        user_name, len(missing_ids),
-                    )
-                    mysql_df = self._fetch_missing_contracts_from_mysql(
-                        missing_ids, df.columns.tolist(), cols_by_lower,
-                    )
-                    if mysql_df is not None and not mysql_df.empty:
-                        df = pd.concat([df, mysql_df], ignore_index=True)
-                        logger.info(
-                            "Reporte %s: %d contratos recuperados desde MySQL.",
-                            user_name, len(mysql_df),
-                        )
-
-            # Forzar dias/rango del reporte con la misma logica operativa de asignacion (MySQL).
+            # Fuente unica: MySQL en vivo. PG-prod quedo congelado en 2025-12 y
+            # ademas no contiene ~35% de los contratos asignados, lo que producia
+            # valores stale + un fallback con otra formula de capital. Ahora TODOS
+            # los contratos asignados se construyen desde MySQL con una sola formula
+            # de capital, y dias/cuotas/comision/%/descuentos/opciones se derivan de
+            # los MISMOS dias operativos (la fila ya no se contradice).
             if days_overdue_map is None:
                 days_overdue_map = self._load_operational_days_overdue(contracts)
             overdue_installments_map = self._load_operational_overdue_installments(contracts)
 
-            self._apply_operational_days_and_ranges(
-                df,
-                cols_by_lower,
-                days_overdue_map,
-                overdue_installments_map,
+            df = self._build_report_dataframe_mysql(
+                contracts, days_overdue_map, overdue_installments_map,
             )
+            cols_by_lower = {str(col).lower(): col for col in df.columns}
 
             # Eliminar campos innecesarios
             for col in ['cantidad_cuotas_pagados', 'Marca']:
@@ -456,30 +421,483 @@ ORDER BY c.id ASC;
                 comision_col = cols_by_lower.get('comision')
                 if comision_col:
                     df[comision_col] = '30%'
-            
+
+            # Columna "Tipo": etiqueta "Cedulas Impar" para la franja Cobyser
+            # (dias 31-60). Solo Cobyser (45) en los buckets 31_45/46_60
+            # (el informe expresa la franja como rango '31_60'). Vacia en el resto.
+            df['Tipo'] = ''
+            if user_id == 45:
+                rango_col = cols_by_lower.get('rango')
+                if rango_col and rango_col in df.columns:
+                    es_franja = df[rango_col].astype(str).isin(
+                        ['31_60', '31_45', '46_60']
+                    )
+                    df.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+
             # Agregar campo NIT al inicio
             df.insert(0, 'NIT', '901546410-9')
             
             # Generar nombre de archivo
             fecha_actual = datetime.now().strftime('%d-%m-%y')
             if user_id == 81:
-                file_name = f"AloCredit-Phone-{fecha_actual}_INFORME_Serlefin.xlsx"
+                casa = "Serlefin"
             elif user_id == 45:
-                file_name = f"AloCredit-Phone-{fecha_actual}_INFORME_Cobyser.xlsx"
+                casa = "Cobyser"
             else:
-                file_name = f"AloCredit-Phone-{fecha_actual}_INFORME_User{user_id}.xlsx"
-            
+                casa = f"User{user_id}"
+            file_name = f"AloCredit-Phone-{fecha_actual}_INFORME_{casa}.xlsx"
             file_path = self.reports_dir / file_name
-            
-            # Guardar Excel
-            df.to_excel(file_path, index=False)
-            logger.info(f"âœ… INFORME GENERADO: {file_path}")
-            
+
+            # Hojas Twist1 / Twist2 (misma estructura/formulas; producto distinto).
+            # Aislado: un fallo en Twist no rompe la hoja Phone.
+            def _finalize_twist_sheet(tdf: pd.DataFrame) -> pd.DataFrame:
+                if tdf is None or tdf.empty:
+                    return pd.DataFrame(columns=['NIT'] + self.REPORT_BASE_COLUMNS + ['Contrato_Fijo', 'Tipo'])
+                tdf = tdf.copy()
+                tdf['Contrato_Fijo'] = 'NO'
+                tdf['Tipo'] = ''
+                if user_id == 45 and 'rango' in tdf.columns:
+                    es_franja = tdf['rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+                    tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+                tdf.insert(0, 'NIT', '901546410-9')
+                return tdf
+
+            df_twist1 = pd.DataFrame()
+            df_twist2 = pd.DataFrame()
+            try:
+                twist1_ids = self.get_assigned_twist1_for_house([user_id])
+                df_twist1 = _finalize_twist_sheet(self._build_twist1_report_dataframe(twist1_ids))
+                twist2_rows = self.get_assigned_twist2_for_house([user_id])
+                df_twist2 = _finalize_twist_sheet(self._build_twist2_report_dataframe(twist2_rows))
+            except Exception as twist_err:
+                logger.error("Error construyendo hojas Twist para user %s: %s", user_id, twist_err)
+
+            # Guardar Excel con UNA HOJA POR PRODUCTO
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Phone', index=False)
+                df_twist1.to_excel(writer, sheet_name='Twist1', index=False)
+                df_twist2.to_excel(writer, sheet_name='Twist2', index=False)
+            logger.info(
+                "âœ… INFORME GENERADO: %s (Phone=%s, Twist1=%s, Twist2=%s)",
+                file_path, len(df), len(df_twist1), len(df_twist2),
+            )
+
             return str(file_path), df
             
         except Exception as e:
             logger.error(f"âŒ Error generando reporte para user {user_id}: {e}")
             return None, None
+
+    # Columnas base del informe (sin NIT al frente ni Contrato_Fijo al final),
+    # en el MISMO orden/nombre que el informe historico para no romper consumidores.
+    REPORT_BASE_COLUMNS = [
+        "llave", "producto", "contrato_x", "cliente", "telefono", "correo",
+        "cedula", "ciudad", "capital_pendiente", "gastos_vencidos", "deuda_actual",
+        "dias_iniciales_mes", "%_Pago_capital", "%_Descuento_gastos",
+        "valor_final_descuento", "valor_opcion_1",
+        "valor_1_cuota_opcion_2", "valor_2_cuotas_opcion_2", "valor_3_cuotas_opcion_2",
+        "valor_1_cuota_opcion_3", "valor_2_cuotas_opcion_3", "valor_3_cuotas_opcion_3",
+        "valor_1_cuota_opcion_4", "valor_2_cuotas_opcion_4", "valor_3_cuotas_opcion_4",
+        "Cuotas Atrasadas", "comision", "rango",
+        "descripcion_opcion_1", "descripcion_opcion_2",
+        "descripcion_opcion_3", "descripcion_opcion_4",
+    ]
+
+    @staticmethod
+    def _comision_por_dias(dias: int) -> str:
+        """Comision por dias de mora. Rangos contiguos y sin solapamiento
+        (corrige el CASE original donde 151-210 y 151-211 se pisaban)."""
+        if dias <= 0:
+            return '0%'
+        if dias <= 60:
+            return '4%'
+        if dias <= 90:
+            return '6%'
+        if dias <= 150:
+            return '8%'
+        if dias <= 210:
+            return '11%'
+        if dias <= 240:
+            return '13%'
+        return '15%'
+
+    @staticmethod
+    def _discount_factors(dias: int):
+        """Factores de descuento por dias (regla de negocio, igual para los 3 productos)."""
+        if dias <= 150:
+            factor_capital = 1.0
+        elif dias <= 180:
+            factor_capital = 0.95
+        elif dias <= 300:
+            factor_capital = 0.90
+        else:
+            factor_capital = 0.75
+        if dias <= 90:
+            factor_gastos = 0.70
+        elif dias <= 120:
+            factor_gastos = 0.60
+        elif dias <= 150:
+            factor_gastos = 0.50
+        elif dias <= 365:
+            factor_gastos = 0.40
+        else:
+            factor_gastos = 0.0
+        return factor_capital, factor_gastos
+
+    def _financial_report_row(
+        self, *, producto: str, llave: str, contrato_x,
+        capital, gastos, dias: int, cuotas: int, quota,
+        cliente=None, telefono=None, correo=None, cedula=None, ciudad=None,
+    ) -> dict:
+        """
+        Construye una fila del informe con la MISMA logica financiera para
+        Phone / Twist1 / Twist2 (descuento por dias + 4 opciones de pago).
+        Solo cambian las fuentes de capital/gastos/cliente segun el producto.
+        """
+        capital = float(capital or 0)
+        if capital < 0:
+            capital = 0.0
+        gastos = float(gastos or 0)
+        deuda = capital + gastos
+        factor_capital, factor_gastos = self._discount_factors(dias)
+        vfd = round(capital * factor_capital + gastos * factor_gastos)
+        return {
+            "llave": llave,
+            "producto": producto,
+            "contrato_x": contrato_x,
+            "cliente": cliente,
+            "telefono": telefono,
+            "correo": correo,
+            "cedula": cedula,
+            "ciudad": ciudad,
+            "capital_pendiente": capital,
+            "gastos_vencidos": gastos,
+            "deuda_actual": deuda,
+            "dias_iniciales_mes": dias,
+            "%_Pago_capital": f"{int(factor_capital * 100)}%",
+            "%_Descuento_gastos": f"{int(factor_gastos * 100)}%",
+            "valor_final_descuento": vfd,
+            "valor_opcion_1": quota,
+            "valor_1_cuota_opcion_2": deuda,
+            "valor_2_cuotas_opcion_2": round(deuda / 2) if deuda else 0,
+            "valor_3_cuotas_opcion_2": round(deuda / 3) if deuda > 600000 else None,
+            "valor_1_cuota_opcion_3": vfd,
+            "valor_2_cuotas_opcion_3": round(vfd / 2) if vfd else 0,
+            "valor_3_cuotas_opcion_3": round(vfd / 3) if vfd > 600000 else None,
+            "valor_1_cuota_opcion_4": capital,
+            "valor_2_cuotas_opcion_4": round(capital / 2) if capital else 0,
+            "valor_3_cuotas_opcion_4": round(capital / 3) if capital > 600000 else None,
+            "Cuotas Atrasadas": cuotas,
+            "comision": self._comision_por_dias(dias),
+            "rango": get_assignment_dpd_range(dias) or get_dpd_range(dias) or '0',
+            "descripcion_opcion_1": "Pagar_1_cuota__para_normalizar",
+            "descripcion_opcion_2": "Pagar_de_1_a_3_cuotas",
+            "descripcion_opcion_3": "descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k",
+            "descripcion_opcion_4": "cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k",
+        }
+
+    def _build_report_dataframe_mysql(
+        self,
+        contracts: List[int],
+        days_overdue_map: Dict[int, int],
+        overdue_installments_map: Dict[int, int],
+    ) -> pd.DataFrame:
+        """
+        Construye el informe COMPLETO desde MySQL (fuente viva) para TODOS los
+        contratos asignados, con una sola definicion de cada campo:
+
+        - capital_pendiente = outstanding_principal de la ULTIMA cuota pagada
+          (status 1,5, mayor period_number). Si el contrato no tiene cuotas
+          pagadas: device_price - initial_pay + accesorios.
+        - gastos_vencidos = suma de gastos de las cuotas vencidas operativas
+          (status 4, expiration_date <= hoy, outstanding_principal > 0).
+        - deuda_actual = capital_pendiente + gastos_vencidos.
+        - dias_iniciales_mes / Cuotas Atrasadas = mapas operativos (misma logica
+          de asignacion).
+        - %_Pago_capital, %_Descuento_gastos, valor_final_descuento, comision,
+          rango y todas las opciones de pago se derivan de los MISMOS dias
+          operativos, de modo que la fila es internamente consistente.
+        """
+        from app.database.connections import db_manager
+        from sqlalchemy import text
+
+        base = {}
+        batch_size = 1000
+        with db_manager.get_mysql_session() as mysql_session:
+            for i in range(0, len(contracts), batch_size):
+                batch = contracts[i:i + batch_size]
+                batch_str = ",".join(str(int(c)) for c in batch)
+                query = text(f"""
+                    SELECT
+                        c.id AS contract_id,
+                        CONCAT_WS(' ', cu.name, cu.name2, cu.last_name, cu.last_name2) AS cliente,
+                        cu.phone AS telefono,
+                        cu.email AS correo,
+                        cu.dni AS cedula,
+                        cu.departament_reference AS ciudad,
+                        COALESCE(
+                            (SELECT cap.outstanding_principal
+                             FROM contract_amortization cap
+                             WHERE cap.contract_id = c.id
+                               AND cap.contract_amortization_payment_status_id IN (1,5)
+                             ORDER BY cap.period_number DESC
+                             LIMIT 1),
+                            (COALESCE(al.device_price,0) - COALESCE(al.initial_pay,0) + COALESCE(acc.total_acc,0))
+                        ) AS capital_pendiente,
+                        COALESCE((
+                            SELECT SUM(
+                                COALESCE(g.interest_payment,0) + COALESCE(g.endorsement,0) +
+                                COALESCE(g.vat,0) + COALESCE(g.seguro_vida,0) +
+                                COALESCE(g.seguro,0) + COALESCE(g.digital_sign,0) +
+                                COALESCE(g.digital_sign_iva,0))
+                            FROM contract_amortization g
+                            WHERE g.contract_id = c.id
+                              AND g.contract_amortization_payment_status_id = 4
+                              AND g.expiration_date <= CURDATE()
+                              AND g.outstanding_principal > 0
+                        ), 0) AS gastos_vencidos,
+                        al.quota AS quota
+                    FROM contract c
+                    JOIN application a ON a.id = c.application_id
+                    JOIN customer cu ON cu.id = a.customer_id
+                    LEFT JOIN (
+                        SELECT application_id, MAX(id) AS max_loan_id
+                        FROM application_loan GROUP BY application_id
+                    ) mx ON mx.application_id = a.id
+                    LEFT JOIN application_loan al ON al.id = mx.max_loan_id
+                    LEFT JOIN (
+                        SELECT application_id, SUM(price) AS total_acc
+                        FROM application_accessory GROUP BY application_id
+                    ) acc ON acc.application_id = a.id
+                    WHERE c.id IN ({batch_str})
+                """)
+                for row in mysql_session.execute(query):
+                    m = row._mapping
+                    base[int(m['contract_id'])] = m
+
+        rows = []
+        for raw_cid in contracts:
+            cid = int(raw_cid)
+            m = base.get(cid)
+            dias = int(days_overdue_map.get(cid, 0) or 0)
+            cuotas = int(overdue_installments_map.get(cid, 0) or 0)
+
+            if m is not None:
+                capital = float(m['capital_pendiente'] or 0)
+                gastos = float(m['gastos_vencidos'] or 0)
+                quota = float(m['quota']) if m['quota'] is not None else None
+                cliente, telefono, correo = m['cliente'], m['telefono'], m['correo']
+                cedula, ciudad = m['cedula'], m['ciudad']
+            else:
+                capital = gastos = 0.0
+                quota = None
+                cliente = telefono = correo = cedula = ciudad = None
+
+            rows.append(self._financial_report_row(
+                producto="PHONE",
+                llave=f"PHONE{cid}",
+                contrato_x=cid,
+                capital=capital,
+                gastos=gastos,
+                dias=dias,
+                cuotas=cuotas,
+                quota=quota,
+                cliente=cliente,
+                telefono=telefono,
+                correo=correo,
+                cedula=cedula,
+                ciudad=ciudad,
+            ))
+
+        return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
+
+    # ==================================================================
+    # Twist 1.0 / Twist 2.0 -> mismas columnas/formulas que Phone.
+    # ==================================================================
+    def _query_ind(self, query: str):
+        """Ejecuta un SELECT en la base de indicadores (contract_advisors*)."""
+        conn = psycopg2.connect(
+            host=self.db_config_ind['host'], user=self.db_config_ind['user'],
+            password=self.db_config_ind['password'], dbname=self.db_config_ind['database'],
+            port=self.db_config_ind['port'], options=self.db_config_ind['options'],
+        )
+        try:
+            df = pd.read_sql(query, conn)
+        finally:
+            conn.close()
+        return df
+
+    def get_assigned_twist1_for_house(self, user_ids: List[int]) -> List[int]:
+        if not user_ids:
+            return []
+        users_str = ",".join(str(int(u)) for u in user_ids)
+        try:
+            df = self._query_ind(
+                f"SELECT DISTINCT contract_id FROM alocreditindicators.contract_advisors_twist "
+                f"WHERE user_id IN ({users_str});"
+            )
+            return df['contract_id'].tolist() if not df.empty else []
+        except Exception as e:
+            logger.error("Error obteniendo Twist1 de casa %s: %s", user_ids, e)
+            return []
+
+    def get_assigned_twist2_for_house(self, user_ids: List[int]) -> List[dict]:
+        if not user_ids:
+            return []
+        users_str = ",".join(str(int(u)) for u in user_ids)
+        try:
+            df = self._query_ind(
+                f"SELECT line_id, cbs_id, cedula, days_overdue "
+                f"FROM alocreditindicators.contract_advisors_twist2 WHERE user_id IN ({users_str});"
+            )
+            return df.to_dict("records") if not df.empty else []
+        except Exception as e:
+            logger.error("Error obteniendo Twist2 de casa %s: %s", user_ids, e)
+            return []
+
+    def _build_twist1_report_dataframe(self, contract_ids: List[int]) -> pd.DataFrame:
+        """Informe Twist1 (MySQL twist_) con la MISMA logica financiera que Phone."""
+        if not contract_ids:
+            return pd.DataFrame(columns=self.REPORT_BASE_COLUMNS)
+        from app.database.connections import db_manager
+        from sqlalchemy import text
+
+        base = {}
+        batch_size = 1000
+        with db_manager.get_mysql_session() as mysql_session:
+            for i in range(0, len(contract_ids), batch_size):
+                batch = contract_ids[i:i + batch_size]
+                batch_str = ",".join(str(int(c)) for c in batch)
+                query = text(f"""
+                    SELECT
+                        c.id AS contract_id,
+                        CONCAT_WS(' ', cu.name, cu.name2, cu.last_name, cu.last_name2) AS cliente,
+                        cu.phone AS telefono, cu.email AS correo, cu.dni AS cedula,
+                        cu.departament_reference AS ciudad,
+                        COALESCE((SELECT cap.outstanding_principal FROM twist_contract_amortization cap
+                                  WHERE cap.twist_contract_id = c.id
+                                    AND cap.twist_contract_payment_status_id IN (1, 4)
+                                  ORDER BY cap.period_number DESC LIMIT 1), 0) AS capital_pendiente,
+                        COALESCE((SELECT SUM(COALESCE(g.interest_payment,0)+COALESCE(g.endorsement,0)+
+                                  COALESCE(g.vat,0)+COALESCE(g.seguro_vida,0)+COALESCE(g.seguro,0)+
+                                  COALESCE(g.digital_sign,0)+COALESCE(g.digital_sign_iva,0))
+                                  FROM twist_contract_amortization g
+                                  WHERE g.twist_contract_id = c.id
+                                    AND g.twist_contract_payment_status_id = 3
+                                    AND g.expiration_date <= CURDATE()
+                                    AND g.outstanding_principal > 0), 0) AS gastos_vencidos,
+                        COALESCE((SELECT DATEDIFF(CURDATE(), MIN(d.expiration_date))
+                                  FROM twist_contract_amortization d
+                                  WHERE d.twist_contract_id = c.id
+                                    AND d.twist_contract_payment_status_id = 3
+                                    AND d.expiration_date < CURDATE()
+                                    AND d.outstanding_principal > 0), 0) AS dias,
+                        COALESCE((SELECT COUNT(*) FROM twist_contract_amortization q
+                                  WHERE q.twist_contract_id = c.id
+                                    AND q.twist_contract_payment_status_id = 3
+                                    AND q.expiration_date <= CURDATE()
+                                    AND q.outstanding_principal > 0), 0) AS cuotas
+                    FROM twist_contract c
+                    JOIN twist_application a ON a.id = c.twist_application_id
+                    JOIN customer cu ON cu.id = a.customer_id
+                    WHERE c.id IN ({batch_str})
+                """)
+                for row in mysql_session.execute(query):
+                    m = row._mapping
+                    base[int(m['contract_id'])] = m
+
+        rows = []
+        for cid in contract_ids:
+            cid = int(cid)
+            m = base.get(cid)
+            if m is None:
+                continue
+            rows.append(self._financial_report_row(
+                producto="TWIST1", llave=f"TWIST1{cid}", contrato_x=cid,
+                capital=m['capital_pendiente'], gastos=m['gastos_vencidos'],
+                dias=int(m['dias'] or 0), cuotas=int(m['cuotas'] or 0), quota=None,
+                cliente=m['cliente'], telefono=m['telefono'], correo=m['correo'],
+                cedula=m['cedula'], ciudad=m['ciudad'],
+            ))
+        return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
+
+    def _build_twist2_report_dataframe(self, assigned_rows: List[dict]) -> pd.DataFrame:
+        """Informe Twist2 (CBS line_balance + PDS clients) con la MISMA logica que Phone."""
+        if not assigned_rows:
+            return pd.DataFrame(columns=self.REPORT_BASE_COLUMNS)
+
+        cbs_ids = [int(r['cbs_id']) for r in assigned_rows if r.get('cbs_id') is not None]
+        line_ids = [str(r['line_id']) for r in assigned_rows if r.get('line_id')]
+
+        balance_map = {}
+        if cbs_ids:
+            cbs_conn = psycopg2.connect(
+                host=settings.CBS_DB_HOST, port=settings.CBS_DB_PORT, user=settings.CBS_DB_USER,
+                password=settings.CBS_DB_PASSWORD, dbname=settings.CBS_DB_NAME,
+                connect_timeout=settings.CBS_DB_CONNECT_TIMEOUT,
+            )
+            try:
+                cur = cbs_conn.cursor()
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (id_credit_line)
+                        id_credit_line, principal_pending, accrued_interest,
+                        accrued_fee, accrued_arrear
+                    FROM line_balance
+                    WHERE id_credit_line = ANY(%s)
+                    ORDER BY id_credit_line, as_of DESC
+                    """,
+                    (cbs_ids,),
+                )
+                for r in cur.fetchall():
+                    balance_map[int(r[0])] = r
+                cur.close()
+            finally:
+                cbs_conn.close()
+
+        client_map = {}
+        if line_ids:
+            pds_conn = psycopg2.connect(
+                host=settings.PDS_DB_HOST, port=settings.PDS_DB_PORT, user=settings.PDS_DB_USER,
+                password=settings.PDS_DB_PASSWORD, dbname=settings.PDS_DB_NAME,
+                connect_timeout=settings.PDS_DB_CONNECT_TIMEOUT,
+            )
+            try:
+                cur = pds_conn.cursor()
+                cur.execute(
+                    """
+                    SELECT cl.id::text, c.full_name, c.phone_number, c.email, c.city
+                    FROM credit_lines cl JOIN clients c ON c.id = cl.client_id
+                    WHERE cl.id::text = ANY(%s)
+                    """,
+                    (line_ids,),
+                )
+                for r in cur.fetchall():
+                    client_map[str(r[0])] = r
+                cur.close()
+            finally:
+                pds_conn.close()
+
+        rows = []
+        for r in assigned_rows:
+            line_id = str(r.get('line_id'))
+            cbs_id = int(r['cbs_id']) if r.get('cbs_id') is not None else None
+            dias = int(r.get('days_overdue') or 0)
+            bal = balance_map.get(cbs_id) if cbs_id is not None else None
+            capital = float(bal[1] or 0) if bal else 0.0
+            gastos = (float(bal[2] or 0) + float(bal[3] or 0) + float(bal[4] or 0)) if bal else 0.0
+            cli = client_map.get(line_id)
+            cliente = cli[1] if cli else None
+            telefono = cli[2] if cli else None
+            correo = cli[3] if cli else None
+            ciudad = cli[4] if cli else None
+            rows.append(self._financial_report_row(
+                producto="TWIST2", llave=f"TWIST2{line_id}", contrato_x=line_id,
+                capital=capital, gastos=gastos, dias=dias, cuotas=0, quota=None,
+                cliente=cliente, telefono=telefono, correo=correo,
+                cedula=r.get('cedula'), ciudad=ciudad,
+            ))
+        return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
 
     @staticmethod
     def _safe_int(value) -> Optional[int]:

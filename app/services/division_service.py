@@ -842,6 +842,30 @@ class DivisionService:
             # Excluir promesas activas del proceso de asignacion
             excluded_from_assignment = blocked_contract_ids | promise_contract_ids
 
+            # Franja Cobyser (31-60 dias, cedula impar) se asigna a Cobyser, no a
+            # division: excluir esos contratos para no asignarlos por duplicado.
+            results['franja_cobyser_excluded_count'] = 0
+            if settings.FRANJA_COBYSER_ENABLED:
+                try:
+                    franja_odd = self.contract_service.get_franja_cobyser_odd_contracts(
+                        min_days=settings.FRANJA_COBYSER_MIN_DAYS,
+                        max_days=settings.FRANJA_COBYSER_MAX_DAYS,
+                        excluded_contract_ids=excluded_from_assignment or None,
+                    )
+                    franja_odd_ids = {int(c["contract_id"]) for c in franja_odd}
+                    if franja_odd_ids:
+                        logger.info(
+                            "Excluyendo %s contratos de franja Cobyser (cedula impar) de division",
+                            len(franja_odd_ids),
+                        )
+                        excluded_from_assignment = excluded_from_assignment | franja_odd_ids
+                    results['franja_cobyser_excluded_count'] = len(franja_odd_ids)
+                except Exception as franja_error:
+                    logger.warning(
+                        "No se pudo excluir la franja Cobyser de division: %s",
+                        franja_error,
+                    )
+
             # 3. Obtener asignaciones actuales
             current_assignments = self.get_current_assignments()
 
