@@ -86,8 +86,8 @@ Rango **1–60 días**. Reparte entre **14 asesores** (`DIVISION_USER_IDS`) con 
 
 ### SEC-1 · Secreto HMAC hardcodeado en el código — `✅ Hecho`
 - **Tipo:** Security · **Prioridad:** P0 · **Severidad:** Blocker · **Regla Sonar:** `secrets:S6703 / S2068`
-- **Problema:** `API_HMAC_SECRET = "Nexus-Production-Key-2026"` en `app/core/config.py:164`, en texto plano y versionado en git.
-- **Solución aplicada:** se elimina el valor por defecto del código (`API_HMAC_SECRET: str = ""`), se carga exclusivamente desde el entorno. **Producción ya lo provee** en `docker-compose.yml:85` (`API_HMAC_SECRET=Nexus-Production-Key-2026`), por lo que el proceso automático NO cambia. Se añade también a `.env` local y a `.env.example`. Validación de arranque que aborta si está vacío fuera de `DEBUG`.
+- **Problema:** `API_HMAC_SECRET = "<REDACTADO>"` en `app/core/config.py:164`, en texto plano y versionado en git.
+- **Solución aplicada:** se elimina el valor por defecto del código (`API_HMAC_SECRET: str = ""`), se carga exclusivamente desde el entorno. **Producción lo provee** vía `docker-compose.yml` (`API_HMAC_SECRET=${API_HMAC_SECRET}`, interpolado desde el `.env` no versionado), por lo que el proceso automático NO cambia. En `.env.example` queda como placeholder vacío. Validación de arranque que aborta si está vacío fuera de `DEBUG`.
 - **Criterio de aceptación:** ningún secreto literal en el código fuente; la app arranca con la variable definida en entorno.
 - **Acción manual requerida:** ⚠️ rotar el secreto en producción (ver [ACCIONES MANUALES](#acciones-manuales-requeridas-del-equipo)) porque ya quedó expuesto en el historial de git.
 - **Archivos:** `app/core/config.py`, `.env`, `.env.example`

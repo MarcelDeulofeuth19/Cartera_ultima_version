@@ -187,6 +187,16 @@ class ContractService:
                 + ")\n"
             )
 
+        # Regla: excluir contratos endosados a afianzadora (pagaré).
+        pagare_clause = ""
+        pagare_ids = settings.pagare_excluded_status_ids
+        if pagare_ids:
+            pagare_clause = (
+                "  AND (c.pagare_status_id IS NULL OR c.pagare_status_id NOT IN ("
+                + ",".join(str(p) for p in pagare_ids)
+                + "))\n"
+            )
+
         query = f"""
         SELECT
             ca.contract_id,
@@ -199,7 +209,7 @@ class ContractService:
           AND ca.outstanding_principal > 0
           AND ca.contract_amortization_payment_status_id = 4
           AND c.contracts_status_id NOT IN (5, 7)
-        {exclusion_clause}
+        {exclusion_clause}{pagare_clause}
         GROUP BY ca.contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
         ORDER BY days_overdue ASC, ca.contract_id ASC
@@ -424,6 +434,16 @@ class ContractService:
                 + ")\n"
             )
 
+        # Regla: excluir contratos Twist1 endosados a afianzadora (pagaré).
+        pagare_clause = ""
+        pagare_ids = settings.pagare_excluded_status_ids
+        if pagare_ids:
+            pagare_clause = (
+                "  AND (c.twist_pagare_status_id IS NULL OR c.twist_pagare_status_id NOT IN ("
+                + ",".join(str(p) for p in pagare_ids)
+                + "))\n"
+            )
+
         query = f"""
         SELECT
             ca.twist_contract_id AS contract_id,
@@ -436,7 +456,7 @@ class ContractService:
           AND ca.outstanding_principal > 0
           AND ca.twist_contract_payment_status_id = 3
           AND c.twist_contract_status_id NOT IN (5, 7)
-        {exclusion_clause}
+        {exclusion_clause}{pagare_clause}
         GROUP BY ca.twist_contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
         ORDER BY days_overdue ASC, ca.twist_contract_id ASC

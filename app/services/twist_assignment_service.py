@@ -24,9 +24,10 @@ from app.core.config import settings
 from app.core.dpd import (
     ASSIGNMENT_DPD_ORDER,
     get_assignment_dpd_range,
+    get_dpd_range,
     is_cedula_impar,
 )
-from app.database.models import ContractAdvisorTwist, Twist2Advisor
+from app.database.models import ContractAdvisorHistory, ContractAdvisorTwist, Twist2Advisor
 from app.services.assignment_service import AssignmentService
 
 logger = logging.getLogger(__name__)
@@ -118,18 +119,31 @@ class TwistAssignmentService:
                 int(row[0])
                 for row in self.postgres_session.query(ContractAdvisorTwist.contract_id).all()
             }
+            from datetime import datetime
+            now = datetime.now()
             rows = []
+            history_rows = []
             for contract, user_id, tipo in decisions:
                 contract_id = int(contract["contract_id"])
                 if contract_id in existing:
                     continue
                 existing.add(contract_id)
                 rows.append({"user_id": int(user_id), "contract_id": contract_id})
+                # Guardar dia inicial en contract_advisors_history (producto TWIST1).
+                d = int(contract.get("days_overdue") or 0)
+                history_rows.append({
+                    "user_id": int(user_id), "contract_id": contract_id,
+                    "fecha_inicial": now, "fecha_terminal": None, "tipo": tipo,
+                    "dias_atraso_inicial": d, "dpd_inicial": get_dpd_range(d),
+                    "dpd_actual": get_dpd_range(d), "estado_actual": "PENDIENTE",
+                    "producto": "TWIST1",
+                })
                 if tipo == "CEDULAS_IMPAR":
                     stats["franja"] += 1
 
             if rows:
                 self.postgres_session.bulk_insert_mappings(ContractAdvisorTwist, rows)
+                self.postgres_session.bulk_insert_mappings(ContractAdvisorHistory, history_rows)
                 self.postgres_session.commit()
             stats["inserted"] = len(rows)
             logger.info(

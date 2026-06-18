@@ -472,6 +472,20 @@ ORDER BY c.id ASC;
             except Exception as twist_err:
                 logger.error("Error construyendo hojas Twist para user %s: %s", user_id, twist_err)
 
+            # La franja 31-60 es EXCLUSIVA de Cobyser. Serlefin (81) NO debe
+            # reportar 31-60 (contratos que derivaron a esa mora desde 61+ por
+            # pago parcial; append-only no los reasigna). Se excluyen del informe
+            # de Serlefin en las 3 hojas.
+            if user_id == 81:
+                FRANJA = ('31_60', '31_45', '46_60')
+                def _drop_franja(frame):
+                    if frame is None or frame.empty or 'rango' not in frame.columns:
+                        return frame
+                    return frame[~frame['rango'].astype(str).isin(FRANJA)].copy()
+                df = _drop_franja(df)
+                df_twist1 = _drop_franja(df_twist1)
+                df_twist2 = _drop_franja(df_twist2)
+
             # Guardar Excel con UNA HOJA POR PRODUCTO
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Phone', index=False)
@@ -596,6 +610,14 @@ ORDER BY c.id ASC;
             "descripcion_opcion_4": "cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k",
         }
 
+    @staticmethod
+    def _pagare_exclude_sql(column: str) -> str:
+        """Fragmento SQL para excluir contratos endosados a afianzadora (pagaré)."""
+        ids = settings.pagare_excluded_status_ids
+        if not ids:
+            return ""
+        return f" AND ({column} IS NULL OR {column} NOT IN ({','.join(str(i) for i in ids)}))"
+
     def _build_report_dataframe_mysql(
         self,
         contracts: List[int],
@@ -669,7 +691,7 @@ ORDER BY c.id ASC;
                         SELECT application_id, SUM(price) AS total_acc
                         FROM application_accessory GROUP BY application_id
                     ) acc ON acc.application_id = a.id
-                    WHERE c.id IN ({batch_str})
+                    WHERE c.id IN ({batch_str}){self._pagare_exclude_sql('c.pagare_status_id')}
                 """)
                 for row in mysql_session.execute(query):
                     m = row._mapping
@@ -709,6 +731,12 @@ ORDER BY c.id ASC;
                 ciudad=ciudad,
             ))
 
+        # dias_iniciales_mes = dia inicial guardado en contract_advisors_history
+        hist = self._history_initial_days([r['contrato_x'] for r in rows], 'PHONE')
+        for r in rows:
+            cid = r.get('contrato_x')
+            if isinstance(cid, int) and cid in hist:
+                r['dias_iniciales_mes'] = hist[cid]
         return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
 
     # ==================================================================
@@ -726,6 +754,31 @@ ORDER BY c.id ASC;
         finally:
             conn.close()
         return df
+
+    def _history_initial_days(self, contract_ids, producto: str) -> dict:
+        """
+        Dia inicial (dias_atraso_inicial) guardado en contract_advisors_history,
+        por producto. Se usa para la columna dias_iniciales_mes del informe.
+        """
+        out = {}
+        ids = [int(c) for c in contract_ids if c is not None]
+        for i in range(0, len(ids), 2000):
+            ins = ",".join(str(x) for x in ids[i:i + 2000])
+            try:
+                df = self._query_ind(
+                    f"SELECT contract_id, dias_atraso_incial "
+                    f"FROM alocreditindicators.contract_advisors_history "
+                    f"WHERE producto = '{producto}' AND \"Fecha Terminal\" IS NULL "
+                    f"AND contract_id IN ({ins})"
+                )
+            except Exception as e:
+                logger.warning("No se pudo leer dia inicial de history (%s): %s", producto, e)
+                continue
+            for _, r in df.iterrows():
+                v = r['dias_atraso_incial']
+                if pd.notna(v):
+                    out[int(r['contract_id'])] = int(v)
+        return out
 
     def get_assigned_twist1_for_house(self, user_ids: List[int]) -> List[int]:
         if not user_ids:
@@ -800,7 +853,7 @@ ORDER BY c.id ASC;
                     FROM twist_contract c
                     JOIN twist_application a ON a.id = c.twist_application_id
                     JOIN customer cu ON cu.id = a.customer_id
-                    WHERE c.id IN ({batch_str})
+                    WHERE c.id IN ({batch_str}){self._pagare_exclude_sql('c.twist_pagare_status_id')}
                 """)
                 for row in mysql_session.execute(query):
                     m = row._mapping
@@ -812,13 +865,24 @@ ORDER BY c.id ASC;
             m = base.get(cid)
             if m is None:
                 continue
+            dias = int(m['dias'] or 0)
+            # Solo se reporta mora valida (>=31). Excluye al-dia (rango 0) y 1-30
+            # que pueden quedar por herencia del proceso externo o deriva append-only.
+            if dias < settings.FRANJA_COBYSER_MIN_DAYS:
+                continue
             rows.append(self._financial_report_row(
                 producto="TWIST1", llave=f"TWIST1{cid}", contrato_x=cid,
                 capital=m['capital_pendiente'], gastos=m['gastos_vencidos'],
-                dias=int(m['dias'] or 0), cuotas=int(m['cuotas'] or 0), quota=None,
+                dias=dias, cuotas=int(m['cuotas'] or 0), quota=None,
                 cliente=m['cliente'], telefono=m['telefono'], correo=m['correo'],
                 cedula=m['cedula'], ciudad=m['ciudad'],
             ))
+        # dias_iniciales_mes = dia inicial guardado en history (producto TWIST1)
+        hist = self._history_initial_days([r['contrato_x'] for r in rows], 'TWIST1')
+        for r in rows:
+            cid = r.get('contrato_x')
+            if isinstance(cid, int) and cid in hist:
+                r['dias_iniciales_mes'] = hist[cid]
         return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
 
     def _build_twist2_report_dataframe(self, assigned_rows: List[dict]) -> pd.DataFrame:
@@ -866,7 +930,7 @@ ORDER BY c.id ASC;
                 cur = pds_conn.cursor()
                 cur.execute(
                     """
-                    SELECT cl.id::text, c.full_name, c.phone_number, c.email, c.city
+                    SELECT cl.id::text, c.full_name, c.phone_number, c.email, c.city, cl.external_id
                     FROM credit_lines cl JOIN clients c ON c.id = cl.client_id
                     WHERE cl.id::text = ANY(%s)
                     """,
@@ -883,6 +947,9 @@ ORDER BY c.id ASC;
             line_id = str(r.get('line_id'))
             cbs_id = int(r['cbs_id']) if r.get('cbs_id') is not None else None
             dias = int(r.get('days_overdue') or 0)
+            # Solo mora valida (>=31): excluye al-dia (rango 0) y 1-30.
+            if dias < settings.FRANJA_COBYSER_MIN_DAYS:
+                continue
             bal = balance_map.get(cbs_id) if cbs_id is not None else None
             capital = float(bal[1] or 0) if bal else 0.0
             gastos = (float(bal[2] or 0) + float(bal[3] or 0) + float(bal[4] or 0)) if bal else 0.0
@@ -891,8 +958,14 @@ ORDER BY c.id ASC;
             telefono = cli[2] if cli else None
             correo = cli[3] if cli else None
             ciudad = cli[4] if cli else None
+            # El contrato de Twist2 es el external_id (numero), no el UUID de la linea.
+            ext_raw = cli[5] if cli else None
+            if ext_raw is not None and str(ext_raw).strip().isdigit():
+                external = int(str(ext_raw).strip())
+            else:
+                external = cbs_id
             rows.append(self._financial_report_row(
-                producto="TWIST2", llave=f"TWIST2{line_id}", contrato_x=line_id,
+                producto="TWIST2", llave=f"TWIST2_{external}", contrato_x=external,
                 capital=capital, gastos=gastos, dias=dias, cuotas=0, quota=None,
                 cliente=cliente, telefono=telefono, correo=correo,
                 cedula=r.get('cedula'), ciudad=ciudad,
@@ -979,7 +1052,7 @@ ORDER BY c.id ASC;
                             AND ca.contract_amortization_payment_status_id = 4
                             AND ca.expiration_date <= CURDATE()
                             AND ca.outstanding_principal > 0
-                        WHERE c.id IN ({batch_str})
+                        WHERE c.id IN ({batch_str}){self._pagare_exclude_sql('c.pagare_status_id')}
                         GROUP BY c.id, a.id, cu.name, cu.name2, cu.last_name, cu.last_name2,
                                  cu.phone, cu.email, cu.dni, cu.departament_reference
                     """)

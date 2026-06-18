@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     FRANJA_COBYSER_MAX_DAYS: int = 60
     FRANJA_COBYSER_USER_ID: int = 45
 
+    # Regla: contratos ENDOSADOS a afianzadora (pagaré) NO se asignan ni se
+    # reportan. Estados: 1=Libraval, 2=Fianzavasa, 3=Figarantías.
+    PAGARE_EXCLUDE_ENABLED: bool = True
+    PAGARE_EXCLUDED_STATUS_IDS: str = "1,2,3"
+
     # Efectos que determinan contratos fijos
     EFFECT_ACUERDO_PAGO: str = "acuerdo_de_pago"
     EFFECT_PAGO_TOTAL: str = "pago_total"
@@ -237,6 +242,18 @@ class Settings(BaseSettings):
     def all_users(self) -> List[int]:
         """Retorna todos los usuarios de ambas casas de cobranza"""
         return self.COBYSER_USERS + self.SERLEFIN_USERS
+
+    @property
+    def pagare_excluded_status_ids(self) -> List[int]:
+        """IDs de estado de pagaré (endosos a afianzadora) que se excluyen de asignación."""
+        if not self.PAGARE_EXCLUDE_ENABLED:
+            return []
+        out: List[int] = []
+        for raw in str(self.PAGARE_EXCLUDED_STATUS_IDS or "").split(","):
+            raw = raw.strip()
+            if raw.isdigit() and int(raw) not in out:
+                out.append(int(raw))
+        return out
 
     @staticmethod
     def _parse_recipients(raw_value: str) -> List[str]:

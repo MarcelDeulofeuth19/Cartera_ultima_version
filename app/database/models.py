@@ -71,7 +71,7 @@ class ContractAdvisorHistory(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)
-    contract_id = Column(Integer, nullable=False, index=True)
+    contract_id = Column(BigInteger, nullable=False, index=True)
     fecha_inicial = Column("Fecha Inicial", DateTime, nullable=False)
     fecha_terminal = Column("Fecha Terminal", DateTime, nullable=True)
     tipo = Column(String(50), nullable=True, index=True)
