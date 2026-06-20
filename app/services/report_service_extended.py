@@ -14,6 +14,8 @@ from app.data.manual_fixed_contracts import MANUAL_FIXED_CONTRACTS
 
 logger = logging.getLogger(__name__)
 
+CUOTAS_ATRASADAS_COL = "Cuotas Atrasadas"
+
 
 class ReportServiceExtended:
     """Servicio para generaciÃ³n de reportes detallados con informaciÃ³n de contratos fijos"""
@@ -376,9 +378,7 @@ ORDER BY c.id ASC;
         if not contracts:
             logger.warning(f"No hay contratos para user {user_id}")
             return None, None
-        
-        lista_contratos = ",".join(str(x) for x in contracts)
-        
+
         try:
             logger.info(f"ðŸ“Š Generando reporte para {user_name} ({len(contracts)} contratos)...")
             
@@ -397,46 +397,8 @@ ORDER BY c.id ASC;
             )
             cols_by_lower = {str(col).lower(): col for col in df.columns}
 
-            # Eliminar campos innecesarios
-            for col in ['cantidad_cuotas_pagados', 'Marca']:
-                if col in df.columns:
-                    df = df.drop(columns=[col])
+            df = self._finalize_phone_df(df, cols_by_lower, user_id)
 
-            # Agregar campo "Contrato Fijo"
-            manual_fixed = MANUAL_FIXED_CONTRACTS.get(user_id, [])
-            contrato_col = cols_by_lower.get('contrato_x')
-            if contrato_col:
-                df['Contrato_Fijo'] = df[contrato_col].apply(
-                    lambda x: 'SI' if x in manual_fixed else 'NO'
-                )
-            else:
-                logger.warning(
-                    "No se encontro columna de contrato para user %s. Se marcara Contrato_Fijo='NO'.",
-                    user_id,
-                )
-                df['Contrato_Fijo'] = 'NO'
-
-            # Ajustar comisiÃ³n para Cobyser (Usuario 45)
-            if user_id == 45:
-                comision_col = cols_by_lower.get('comision')
-                if comision_col:
-                    df[comision_col] = '30%'
-
-            # Columna "Tipo": etiqueta "Cedulas Impar" para la franja Cobyser
-            # (dias 31-60). Solo Cobyser (45) en los buckets 31_45/46_60
-            # (el informe expresa la franja como rango '31_60'). Vacia en el resto.
-            df['Tipo'] = ''
-            if user_id == 45:
-                rango_col = cols_by_lower.get('rango')
-                if rango_col and rango_col in df.columns:
-                    es_franja = df[rango_col].astype(str).isin(
-                        ['31_60', '31_45', '46_60']
-                    )
-                    df.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
-
-            # Agregar campo NIT al inicio
-            df.insert(0, 'NIT', '901546410-9')
-            
             # Generar nombre de archivo
             fecha_actual = datetime.now().strftime('%d-%m-%y')
             if user_id == 81:
@@ -448,43 +410,16 @@ ORDER BY c.id ASC;
             file_name = f"AloCredit-Phone-{fecha_actual}_INFORME_{casa}.xlsx"
             file_path = self.reports_dir / file_name
 
-            # Hojas Twist1 / Twist2 (misma estructura/formulas; producto distinto).
-            # Aislado: un fallo en Twist no rompe la hoja Phone.
-            def _finalize_twist_sheet(tdf: pd.DataFrame) -> pd.DataFrame:
-                if tdf is None or tdf.empty:
-                    return pd.DataFrame(columns=['NIT'] + self.REPORT_BASE_COLUMNS + ['Contrato_Fijo', 'Tipo'])
-                tdf = tdf.copy()
-                tdf['Contrato_Fijo'] = 'NO'
-                tdf['Tipo'] = ''
-                if user_id == 45 and 'rango' in tdf.columns:
-                    es_franja = tdf['rango'].astype(str).isin(['31_60', '31_45', '46_60'])
-                    tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
-                tdf.insert(0, 'NIT', '901546410-9')
-                return tdf
-
-            df_twist1 = pd.DataFrame()
-            df_twist2 = pd.DataFrame()
-            try:
-                twist1_ids = self.get_assigned_twist1_for_house([user_id])
-                df_twist1 = _finalize_twist_sheet(self._build_twist1_report_dataframe(twist1_ids))
-                twist2_rows = self.get_assigned_twist2_for_house([user_id])
-                df_twist2 = _finalize_twist_sheet(self._build_twist2_report_dataframe(twist2_rows))
-            except Exception as twist_err:
-                logger.error("Error construyendo hojas Twist para user %s: %s", user_id, twist_err)
+            df_twist1, df_twist2 = self._build_twist_sheets(user_id)
 
             # La franja 31-60 es EXCLUSIVA de Cobyser. Serlefin (81) NO debe
             # reportar 31-60 (contratos que derivaron a esa mora desde 61+ por
             # pago parcial; append-only no los reasigna). Se excluyen del informe
             # de Serlefin en las 3 hojas.
             if user_id == 81:
-                FRANJA = ('31_60', '31_45', '46_60')
-                def _drop_franja(frame):
-                    if frame is None or frame.empty or 'rango' not in frame.columns:
-                        return frame
-                    return frame[~frame['rango'].astype(str).isin(FRANJA)].copy()
-                df = _drop_franja(df)
-                df_twist1 = _drop_franja(df_twist1)
-                df_twist2 = _drop_franja(df_twist2)
+                df, df_twist1, df_twist2 = self._drop_serlefin_franja(
+                    df, df_twist1, df_twist2
+                )
 
             # Guardar Excel con UNA HOJA POR PRODUCTO
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -502,6 +437,111 @@ ORDER BY c.id ASC;
             logger.error(f"âŒ Error generando reporte para user {user_id}: {e}")
             return None, None
 
+    def _finalize_phone_df(
+        self, df: pd.DataFrame, cols_by_lower: Dict[str, str], user_id: int,
+    ) -> pd.DataFrame:
+        """Post-procesa la hoja Phone: drops, Contrato_Fijo, comision Cobyser,
+        columna Tipo y NIT. Comportamiento identico al original."""
+        # Eliminar campos innecesarios
+        for col in ['cantidad_cuotas_pagados', 'Marca']:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+
+        # Agregar campo "Contrato Fijo"
+        self._apply_contrato_fijo(df, cols_by_lower, user_id)
+
+        # Ajustar comision para Cobyser (Usuario 45)
+        if user_id == 45:
+            comision_col = cols_by_lower.get('comision')
+            if comision_col:
+                df[comision_col] = '30%'
+
+        # Columna "Tipo": etiqueta "Cedulas Impar" para la franja Cobyser
+        # (dias 31-60). Solo Cobyser (45) en los buckets 31_45/46_60
+        # (el informe expresa la franja como rango '31_60'). Vacia en el resto.
+        self._apply_tipo_franja(df, cols_by_lower, user_id)
+
+        # Agregar campo NIT al inicio
+        df.insert(0, 'NIT', '901546410-9')
+        return df
+
+    @staticmethod
+    def _apply_contrato_fijo(
+        df: pd.DataFrame, cols_by_lower: Dict[str, str], user_id: int,
+    ) -> None:
+        """Marca Contrato_Fijo (SI/NO) segun los contratos fijos manuales del user."""
+        manual_fixed = MANUAL_FIXED_CONTRACTS.get(user_id, [])
+        contrato_col = cols_by_lower.get('contrato_x')
+        if contrato_col:
+            df['Contrato_Fijo'] = df[contrato_col].apply(
+                lambda x: 'SI' if x in manual_fixed else 'NO'
+            )
+        else:
+            logger.warning(
+                "No se encontro columna de contrato para user %s. Se marcara Contrato_Fijo='NO'.",
+                user_id,
+            )
+            df['Contrato_Fijo'] = 'NO'
+
+    @staticmethod
+    def _apply_tipo_franja(
+        df: pd.DataFrame, cols_by_lower: Dict[str, str], user_id: int,
+    ) -> None:
+        """Etiqueta la columna Tipo='Cédulas Impar' para la franja Cobyser 31-60."""
+        df['Tipo'] = ''
+        if user_id == 45:
+            rango_col = cols_by_lower.get('rango')
+            if rango_col and rango_col in df.columns:
+                es_franja = df[rango_col].astype(str).isin(
+                    ['31_60', '31_45', '46_60']
+                )
+                df.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+
+    def _finalize_twist_sheet(self, tdf: pd.DataFrame, user_id: int) -> pd.DataFrame:
+        """Finaliza una hoja Twist (Contrato_Fijo, Tipo, NIT)."""
+        if tdf is None or tdf.empty:
+            return pd.DataFrame(columns=['NIT'] + self.REPORT_BASE_COLUMNS + ['Contrato_Fijo', 'Tipo'])
+        tdf = tdf.copy()
+        tdf['Contrato_Fijo'] = 'NO'
+        tdf['Tipo'] = ''
+        if user_id == 45 and 'rango' in tdf.columns:
+            es_franja = tdf['rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+            tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+        tdf.insert(0, 'NIT', '901546410-9')
+        return tdf
+
+    def _build_twist_sheets(self, user_id: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Construye las hojas Twist1 / Twist2. Aislado: un fallo en Twist no
+        rompe la hoja Phone."""
+        df_twist1 = pd.DataFrame()
+        df_twist2 = pd.DataFrame()
+        try:
+            twist1_ids = self.get_assigned_twist1_for_house([user_id])
+            df_twist1 = self._finalize_twist_sheet(
+                self._build_twist1_report_dataframe(twist1_ids), user_id
+            )
+            twist2_rows = self.get_assigned_twist2_for_house([user_id])
+            df_twist2 = self._finalize_twist_sheet(
+                self._build_twist2_report_dataframe(twist2_rows), user_id
+            )
+        except Exception as twist_err:
+            logger.error("Error construyendo hojas Twist para user %s: %s", user_id, twist_err)
+        return df_twist1, df_twist2
+
+    @staticmethod
+    def _drop_serlefin_franja(
+        df: pd.DataFrame, df_twist1: pd.DataFrame, df_twist2: pd.DataFrame,
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Excluye la franja 31-60 (exclusiva de Cobyser) de las 3 hojas."""
+        FRANJA = ('31_60', '31_45', '46_60')
+
+        def _drop_franja(frame):
+            if frame is None or frame.empty or 'rango' not in frame.columns:
+                return frame
+            return frame[~frame['rango'].astype(str).isin(FRANJA)].copy()
+
+        return _drop_franja(df), _drop_franja(df_twist1), _drop_franja(df_twist2)
+
     # Columnas base del informe (sin NIT al frente ni Contrato_Fijo al final),
     # en el MISMO orden/nombre que el informe historico para no romper consumidores.
     REPORT_BASE_COLUMNS = [
@@ -512,7 +552,7 @@ ORDER BY c.id ASC;
         "valor_1_cuota_opcion_2", "valor_2_cuotas_opcion_2", "valor_3_cuotas_opcion_2",
         "valor_1_cuota_opcion_3", "valor_2_cuotas_opcion_3", "valor_3_cuotas_opcion_3",
         "valor_1_cuota_opcion_4", "valor_2_cuotas_opcion_4", "valor_3_cuotas_opcion_4",
-        "Cuotas Atrasadas", "comision", "rango",
+        CUOTAS_ATRASADAS_COL, "comision", "rango",
         "descripcion_opcion_1", "descripcion_opcion_2",
         "descripcion_opcion_3", "descripcion_opcion_4",
     ]
@@ -601,7 +641,7 @@ ORDER BY c.id ASC;
             "valor_1_cuota_opcion_4": capital,
             "valor_2_cuotas_opcion_4": round(capital / 2) if capital else 0,
             "valor_3_cuotas_opcion_4": round(capital / 3) if capital > 600000 else None,
-            "Cuotas Atrasadas": cuotas,
+            CUOTAS_ATRASADAS_COL: cuotas,
             "comision": self._comision_por_dias(dias),
             "rango": get_assignment_dpd_range(dias) or get_dpd_range(dias) or '0',
             "descripcion_opcion_1": "Pagar_1_cuota__para_normalizar",
@@ -613,33 +653,13 @@ ORDER BY c.id ASC;
     @staticmethod
     def _pagare_exclude_sql(column: str) -> str:
         """Fragmento SQL para excluir contratos endosados a afianzadora (pagaré)."""
-        ids = settings.pagare_excluded_status_ids
+        ids = settings.pagare_excluded_status_id_list
         if not ids:
             return ""
         return f" AND ({column} IS NULL OR {column} NOT IN ({','.join(str(i) for i in ids)}))"
 
-    def _build_report_dataframe_mysql(
-        self,
-        contracts: List[int],
-        days_overdue_map: Dict[int, int],
-        overdue_installments_map: Dict[int, int],
-    ) -> pd.DataFrame:
-        """
-        Construye el informe COMPLETO desde MySQL (fuente viva) para TODOS los
-        contratos asignados, con una sola definicion de cada campo:
-
-        - capital_pendiente = outstanding_principal de la ULTIMA cuota pagada
-          (status 1,5, mayor period_number). Si el contrato no tiene cuotas
-          pagadas: device_price - initial_pay + accesorios.
-        - gastos_vencidos = suma de gastos de las cuotas vencidas operativas
-          (status 4, expiration_date <= hoy, outstanding_principal > 0).
-        - deuda_actual = capital_pendiente + gastos_vencidos.
-        - dias_iniciales_mes / Cuotas Atrasadas = mapas operativos (misma logica
-          de asignacion).
-        - %_Pago_capital, %_Descuento_gastos, valor_final_descuento, comision,
-          rango y todas las opciones de pago se derivan de los MISMOS dias
-          operativos, de modo que la fila es internamente consistente.
-        """
+    def _fetch_phone_base(self, contracts: List[int]) -> Dict:
+        """Carga (por lotes, desde MySQL) los datos base Phone por contract_id."""
         from app.database.connections import db_manager
         from sqlalchemy import text
 
@@ -696,40 +716,78 @@ ORDER BY c.id ASC;
                 for row in mysql_session.execute(query):
                     m = row._mapping
                     base[int(m['contract_id'])] = m
+        return base
 
-        rows = []
-        for raw_cid in contracts:
-            cid = int(raw_cid)
-            m = base.get(cid)
-            dias = int(days_overdue_map.get(cid, 0) or 0)
-            cuotas = int(overdue_installments_map.get(cid, 0) or 0)
+    def _phone_row_from_base(
+        self,
+        raw_cid,
+        base: Dict,
+        days_overdue_map: Dict[int, int],
+        overdue_installments_map: Dict[int, int],
+    ) -> dict:
+        """Construye una fila Phone a partir del mapa base + dias/cuotas operativos."""
+        cid = int(raw_cid)
+        m = base.get(cid)
+        dias = int(days_overdue_map.get(cid, 0) or 0)
+        cuotas = int(overdue_installments_map.get(cid, 0) or 0)
 
-            if m is not None:
-                capital = float(m['capital_pendiente'] or 0)
-                gastos = float(m['gastos_vencidos'] or 0)
-                quota = float(m['quota']) if m['quota'] is not None else None
-                cliente, telefono, correo = m['cliente'], m['telefono'], m['correo']
-                cedula, ciudad = m['cedula'], m['ciudad']
-            else:
-                capital = gastos = 0.0
-                quota = None
-                cliente = telefono = correo = cedula = ciudad = None
+        if m is not None:
+            capital = float(m['capital_pendiente'] or 0)
+            gastos = float(m['gastos_vencidos'] or 0)
+            quota = float(m['quota']) if m['quota'] is not None else None
+            cliente, telefono, correo = m['cliente'], m['telefono'], m['correo']
+            cedula, ciudad = m['cedula'], m['ciudad']
+        else:
+            capital = gastos = 0.0
+            quota = None
+            cliente = telefono = correo = cedula = ciudad = None
 
-            rows.append(self._financial_report_row(
-                producto="PHONE",
-                llave=f"PHONE{cid}",
-                contrato_x=cid,
-                capital=capital,
-                gastos=gastos,
-                dias=dias,
-                cuotas=cuotas,
-                quota=quota,
-                cliente=cliente,
-                telefono=telefono,
-                correo=correo,
-                cedula=cedula,
-                ciudad=ciudad,
-            ))
+        return self._financial_report_row(
+            producto="PHONE",
+            llave=f"PHONE{cid}",
+            contrato_x=cid,
+            capital=capital,
+            gastos=gastos,
+            dias=dias,
+            cuotas=cuotas,
+            quota=quota,
+            cliente=cliente,
+            telefono=telefono,
+            correo=correo,
+            cedula=cedula,
+            ciudad=ciudad,
+        )
+
+    def _build_report_dataframe_mysql(
+        self,
+        contracts: List[int],
+        days_overdue_map: Dict[int, int],
+        overdue_installments_map: Dict[int, int],
+    ) -> pd.DataFrame:
+        """
+        Construye el informe COMPLETO desde MySQL (fuente viva) para TODOS los
+        contratos asignados, con una sola definicion de cada campo:
+
+        - capital_pendiente = outstanding_principal de la ULTIMA cuota pagada
+          (status 1,5, mayor period_number). Si el contrato no tiene cuotas
+          pagadas: device_price - initial_pay + accesorios.
+        - gastos_vencidos = suma de gastos de las cuotas vencidas operativas
+          (status 4, expiration_date <= hoy, outstanding_principal > 0).
+        - deuda_actual = capital_pendiente + gastos_vencidos.
+        - dias_iniciales_mes / Cuotas Atrasadas = mapas operativos (misma logica
+          de asignacion).
+        - %_Pago_capital, %_Descuento_gastos, valor_final_descuento, comision,
+          rango y todas las opciones de pago se derivan de los MISMOS dias
+          operativos, de modo que la fila es internamente consistente.
+        """
+        base = self._fetch_phone_base(contracts)
+
+        rows = [
+            self._phone_row_from_base(
+                raw_cid, base, days_overdue_map, overdue_installments_map,
+            )
+            for raw_cid in contracts
+        ]
 
         # dias_iniciales_mes = dia inicial guardado en contract_advisors_history
         hist = self._history_initial_days([r['contrato_x'] for r in rows], 'PHONE')
@@ -808,10 +866,8 @@ ORDER BY c.id ASC;
             logger.error("Error obteniendo Twist2 de casa %s: %s", user_ids, e)
             return []
 
-    def _build_twist1_report_dataframe(self, contract_ids: List[int]) -> pd.DataFrame:
-        """Informe Twist1 (MySQL twist_) con la MISMA logica financiera que Phone."""
-        if not contract_ids:
-            return pd.DataFrame(columns=self.REPORT_BASE_COLUMNS)
+    def _fetch_twist1_base(self, contract_ids: List[int]) -> Dict:
+        """Carga (por lotes, desde MySQL twist_) los datos base Twist1 por contract_id."""
         from app.database.connections import db_manager
         from sqlalchemy import text
 
@@ -830,15 +886,20 @@ ORDER BY c.id ASC;
                         COALESCE((SELECT cap.outstanding_principal FROM twist_contract_amortization cap
                                   WHERE cap.twist_contract_id = c.id
                                     AND cap.twist_contract_payment_status_id IN (1, 4)
-                                  ORDER BY cap.period_number DESC LIMIT 1), 0) AS capital_pendiente,
-                        COALESCE((SELECT SUM(COALESCE(g.interest_payment,0)+COALESCE(g.endorsement,0)+
-                                  COALESCE(g.vat,0)+COALESCE(g.seguro_vida,0)+COALESCE(g.seguro,0)+
-                                  COALESCE(g.digital_sign,0)+COALESCE(g.digital_sign_iva,0))
+                                  ORDER BY cap.period_number DESC LIMIT 1),
+                                 -- Sin cuotas pagadas: cae al credito original (precio del prestamo Twist).
+                                 (SELECT tal.price FROM twist_application_loan tal
+                                  WHERE tal.twist_application_id = a.id
+                                  ORDER BY tal.id DESC LIMIT 1),
+                                 0) AS capital_pendiente,
+                        -- gastos_vencidos = cuota COMPLETA (total_fee) de TODAS las cuotas
+                        -- Atrasadas (status 3) por estado, incluida la ultima cuota aunque
+                        -- su outstanding_principal sea 0 (Twist 1.0, definicion PDS wallet).
+                        COALESCE((SELECT SUM(COALESCE(g.total_fee,0))
                                   FROM twist_contract_amortization g
                                   WHERE g.twist_contract_id = c.id
                                     AND g.twist_contract_payment_status_id = 3
-                                    AND g.expiration_date <= CURDATE()
-                                    AND g.outstanding_principal > 0), 0) AS gastos_vencidos,
+                                    AND g.expiration_date <= CURDATE()), 0) AS gastos_vencidos,
                         COALESCE((SELECT DATEDIFF(CURDATE(), MIN(d.expiration_date))
                                   FROM twist_contract_amortization d
                                   WHERE d.twist_contract_id = c.id
@@ -858,6 +919,14 @@ ORDER BY c.id ASC;
                 for row in mysql_session.execute(query):
                     m = row._mapping
                     base[int(m['contract_id'])] = m
+        return base
+
+    def _build_twist1_report_dataframe(self, contract_ids: List[int]) -> pd.DataFrame:
+        """Informe Twist1 (MySQL twist_) con la MISMA logica financiera que Phone."""
+        if not contract_ids:
+            return pd.DataFrame(columns=self.REPORT_BASE_COLUMNS)
+
+        base = self._fetch_twist1_base(contract_ids)
 
         rows = []
         for cid in contract_ids:
@@ -893,6 +962,22 @@ ORDER BY c.id ASC;
         cbs_ids = [int(r['cbs_id']) for r in assigned_rows if r.get('cbs_id') is not None]
         line_ids = [str(r['line_id']) for r in assigned_rows if r.get('line_id')]
 
+        balance_map = self._fetch_twist2_balances(cbs_ids)
+        client_map = self._fetch_twist2_clients(line_ids)
+
+        rows = []
+        for r in assigned_rows:
+            cbs_id = int(r['cbs_id']) if r.get('cbs_id') is not None else None
+            dias = int(r.get('days_overdue') or 0)
+            # Solo mora valida (>=31): excluye al-dia (rango 0) y 1-30.
+            if dias < settings.FRANJA_COBYSER_MIN_DAYS:
+                continue
+            rows.append(self._build_twist2_row(r, cbs_id, dias, balance_map, client_map))
+        return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
+
+    @staticmethod
+    def _fetch_twist2_balances(cbs_ids: List[int]) -> Dict:
+        """Saldos CBS (line_balance) por id_credit_line para Twist2."""
         balance_map = {}
         if cbs_ids:
             cbs_conn = psycopg2.connect(
@@ -918,7 +1003,11 @@ ORDER BY c.id ASC;
                 cur.close()
             finally:
                 cbs_conn.close()
+        return balance_map
 
+    @staticmethod
+    def _fetch_twist2_clients(line_ids: List[str]) -> Dict:
+        """Datos de cliente PDS (credit_lines + clients) por line_id para Twist2."""
         client_map = {}
         if line_ids:
             pds_conn = psycopg2.connect(
@@ -941,36 +1030,43 @@ ORDER BY c.id ASC;
                 cur.close()
             finally:
                 pds_conn.close()
+        return client_map
 
-        rows = []
-        for r in assigned_rows:
-            line_id = str(r.get('line_id'))
-            cbs_id = int(r['cbs_id']) if r.get('cbs_id') is not None else None
-            dias = int(r.get('days_overdue') or 0)
-            # Solo mora valida (>=31): excluye al-dia (rango 0) y 1-30.
-            if dias < settings.FRANJA_COBYSER_MIN_DAYS:
-                continue
-            bal = balance_map.get(cbs_id) if cbs_id is not None else None
-            capital = float(bal[1] or 0) if bal else 0.0
-            gastos = (float(bal[2] or 0) + float(bal[3] or 0) + float(bal[4] or 0)) if bal else 0.0
-            cli = client_map.get(line_id)
-            cliente = cli[1] if cli else None
-            telefono = cli[2] if cli else None
-            correo = cli[3] if cli else None
-            ciudad = cli[4] if cli else None
-            # El contrato de Twist2 es el external_id (numero), no el UUID de la linea.
-            ext_raw = cli[5] if cli else None
-            if ext_raw is not None and str(ext_raw).strip().isdigit():
-                external = int(str(ext_raw).strip())
-            else:
-                external = cbs_id
-            rows.append(self._financial_report_row(
-                producto="TWIST2", llave=f"TWIST2_{external}", contrato_x=external,
-                capital=capital, gastos=gastos, dias=dias, cuotas=0, quota=None,
-                cliente=cliente, telefono=telefono, correo=correo,
-                cedula=r.get('cedula'), ciudad=ciudad,
-            ))
-        return pd.DataFrame(rows, columns=self.REPORT_BASE_COLUMNS)
+    def _build_twist2_row(
+        self, r: dict, cbs_id, dias: int, balance_map: Dict, client_map: Dict,
+    ) -> dict:
+        """Construye una fila del informe Twist2 (CBS balance + PDS client)."""
+        line_id = str(r.get('line_id'))
+        bal = balance_map.get(cbs_id) if cbs_id is not None else None
+        capital, gastos = self._twist2_balance_values(bal)
+        cli = client_map.get(line_id)
+        cliente = cli[1] if cli else None
+        telefono = cli[2] if cli else None
+        correo = cli[3] if cli else None
+        ciudad = cli[4] if cli else None
+        # El contrato de Twist2 es el external_id (numero), no el UUID de la linea.
+        external = self._twist2_external_id(cli, cbs_id)
+        return self._financial_report_row(
+            producto="TWIST2", llave=f"TWIST2_{external}", contrato_x=external,
+            capital=capital, gastos=gastos, dias=dias, cuotas=0, quota=None,
+            cliente=cliente, telefono=telefono, correo=correo,
+            cedula=r.get('cedula'), ciudad=ciudad,
+        )
+
+    @staticmethod
+    def _twist2_balance_values(bal):
+        """Capital y gastos a partir de la fila de saldo CBS (o ceros si falta)."""
+        capital = float(bal[1] or 0) if bal else 0.0
+        gastos = (float(bal[2] or 0) + float(bal[3] or 0) + float(bal[4] or 0)) if bal else 0.0
+        return capital, gastos
+
+    @staticmethod
+    def _twist2_external_id(cli, cbs_id):
+        """external_id numerico del cliente PDS; cae a cbs_id si no es numerico."""
+        ext_raw = cli[5] if cli else None
+        if ext_raw is not None and str(ext_raw).strip().isdigit():
+            return int(str(ext_raw).strip())
+        return cbs_id
 
     @staticmethod
     def _safe_int(value) -> Optional[int]:
@@ -980,6 +1076,130 @@ ORDER BY c.id ASC;
             return int(value)
         except Exception:
             return None
+
+    @staticmethod
+    def _missing_comision(dias: int) -> str:
+        """Comision (logica historica del fallback MySQL de contratos faltantes)."""
+        if 1 <= dias <= 60:
+            return '4%'
+        elif 61 <= dias <= 90:
+            return '6%'
+        elif 91 <= dias <= 150:
+            return '8%'
+        elif 151 <= dias <= 210:
+            return '11%'
+        elif dias == 211:
+            return '13%'
+        elif dias >= 212:
+            return '15%'
+        else:
+            return '0%'
+
+    @staticmethod
+    def _missing_rango(dias: int) -> str:
+        """Rango (logica historica del fallback MySQL de contratos faltantes)."""
+        if 1 <= dias <= 30:
+            return '1_30'
+        elif 31 <= dias <= 60:
+            return '31_60'
+        elif 61 <= dias <= 90:
+            return '61_90'
+        elif 91 <= dias <= 150:
+            return '91_150'
+        elif 151 <= dias <= 210:
+            return '151_210'
+        elif dias == 211:
+            return '211'
+        elif dias >= 212:
+            return 'Cartera Castigada'
+        else:
+            return '0'
+
+    def _build_missing_contract_row(
+        self,
+        row,
+        target_columns: List[str],
+        cols_by_lower: Dict[str, str],
+        base_cols: Dict[str, str],
+    ) -> Dict:
+        """
+        Construye una fila del DataFrame de contratos faltantes (fallback MySQL)
+        con la MISMA logica historica de factores/comision/rango/opciones.
+        """
+        (
+            contract_id, llave, producto, cliente, telefono,
+            correo, cedula, ciudad, capital, gastos, deuda,
+            dias, cuotas, quota,
+        ) = row
+
+        capital = float(capital or 0)
+        gastos = float(gastos or 0)
+        deuda = float(deuda or 0)
+        dias = int(dias) if dias is not None else 0
+        cuotas = int(cuotas) if cuotas is not None else 0
+        quota = float(quota) if quota is not None else None
+
+        # Calcular factores de descuento (misma logica que PG)
+        factor_capital, factor_gastos = self._discount_factors(dias)
+        valor_final_descuento = round(capital * factor_capital + gastos * factor_gastos)
+        comision = self._missing_comision(dias)
+        rango = self._missing_rango(dias)
+
+        r = dict.fromkeys(target_columns, None)
+        r[base_cols['contrato']] = contract_id
+        r[base_cols['llave']] = llave
+        r[base_cols['producto']] = producto
+        r[base_cols['cliente']] = cliente
+        r[base_cols['telefono']] = telefono
+        r[base_cols['correo']] = correo
+        r[base_cols['cedula']] = cedula
+        r[base_cols['ciudad']] = ciudad
+        r[base_cols['capital']] = capital
+        r[base_cols['gastos']] = gastos
+        r[base_cols['deuda']] = deuda
+        r[base_cols['dias']] = dias
+        r[base_cols['cuotas']] = cuotas
+
+        # Campos calculados y opciones de pago: misma asignacion condicionada
+        # por columna disponible, expresada como (clave_lower -> valor).
+        computed = self._missing_computed_values(
+            capital, gastos, deuda, quota, valor_final_descuento,
+            factor_capital, factor_gastos, comision, rango,
+        )
+        for key_lower, value in computed.items():
+            col = cols_by_lower.get(key_lower)
+            if col:
+                r[col] = value
+
+        return r
+
+    @staticmethod
+    def _missing_computed_values(
+        capital, gastos, deuda, quota, valor_final_descuento,
+        factor_capital, factor_gastos, comision, rango,
+    ) -> Dict:
+        """Valores calculados (clave_lower -> valor) del fallback MySQL."""
+        return {
+            '%_pago_capital': f"{int(factor_capital * 100)}%",
+            '%_descuento_gastos': f"{int(factor_gastos * 100)}%",
+            'valor_final_descuento': valor_final_descuento,
+            'valor_opcion_1': quota,
+            'valor_1_cuota_opcion_2': deuda,
+            'valor_2_cuotas_opcion_2': round(deuda / 2) if deuda else 0,
+            'valor_3_cuotas_opcion_2': round(deuda / 3) if deuda > 600000 else None,
+            'valor_1_cuota_opcion_3': valor_final_descuento,
+            'valor_2_cuotas_opcion_3': round(valor_final_descuento / 2) if valor_final_descuento else 0,
+            'valor_3_cuotas_opcion_3': round(valor_final_descuento / 3) if valor_final_descuento > 600000 else None,
+            'valor_1_cuota_opcion_4': capital,
+            'valor_2_cuotas_opcion_4': round(capital / 2) if capital else 0,
+            'valor_3_cuotas_opcion_4': round(capital / 3) if capital > 600000 else None,
+            'comision': comision,
+            'rango': rango,
+            'descripcion_opcion_1': 'Pagar_1_cuota__para_normalizar',
+            'descripcion_opcion_2': 'Pagar_de_1_a_3_cuotas',
+            'descripcion_opcion_3': 'descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k',
+            'descripcion_opcion_4': 'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k',
+        }
 
     def _fetch_missing_contracts_from_mysql(
         self,
@@ -1080,160 +1300,22 @@ ORDER BY c.id ASC;
             cuotas_col = (
                 cols_by_lower.get('cuotas atrasadas')
                 or cols_by_lower.get('cuotas_atrasadas')
-                or 'Cuotas Atrasadas'
+                or CUOTAS_ATRASADAS_COL
             )
+            base_cols = {
+                'contrato': contrato_col, 'llave': llave_col, 'producto': producto_col,
+                'cliente': cliente_col, 'telefono': telefono_col, 'correo': correo_col,
+                'cedula': cedula_col, 'ciudad': ciudad_col, 'capital': capital_col,
+                'gastos': gastos_col, 'deuda': deuda_col, 'dias': dias_col,
+                'cuotas': cuotas_col,
+            }
 
-            rows_data = []
-            for row in all_rows:
-                (
-                    contract_id, llave, producto, cliente, telefono,
-                    correo, cedula, ciudad, capital, gastos, deuda,
-                    dias, cuotas, quota,
-                ) = row
-
-                capital = float(capital or 0)
-                gastos = float(gastos or 0)
-                deuda = float(deuda or 0)
-                dias = int(dias) if dias is not None else 0
-                cuotas = int(cuotas) if cuotas is not None else 0
-                quota = float(quota) if quota is not None else None
-
-                # Calcular factores de descuento (misma logica que PG)
-                if dias <= 150:
-                    factor_capital = 1.0
-                elif dias <= 180:
-                    factor_capital = 0.95
-                elif dias <= 300:
-                    factor_capital = 0.90
-                else:
-                    factor_capital = 0.75
-
-                if dias <= 90:
-                    factor_gastos = 0.70
-                elif dias <= 120:
-                    factor_gastos = 0.60
-                elif dias <= 150:
-                    factor_gastos = 0.50
-                elif dias <= 365:
-                    factor_gastos = 0.40
-                else:
-                    factor_gastos = 0.0
-
-                valor_final_descuento = round(capital * factor_capital + gastos * factor_gastos)
-
-                # Comision
-                if 1 <= dias <= 60:
-                    comision = '4%'
-                elif 61 <= dias <= 90:
-                    comision = '6%'
-                elif 91 <= dias <= 150:
-                    comision = '8%'
-                elif 151 <= dias <= 210:
-                    comision = '11%'
-                elif dias == 211:
-                    comision = '13%'
-                elif dias >= 212:
-                    comision = '15%'
-                else:
-                    comision = '0%'
-
-                # Rango
-                if 1 <= dias <= 30:
-                    rango = '1_30'
-                elif 31 <= dias <= 60:
-                    rango = '31_60'
-                elif 61 <= dias <= 90:
-                    rango = '61_90'
-                elif 91 <= dias <= 150:
-                    rango = '91_150'
-                elif 151 <= dias <= 210:
-                    rango = '151_210'
-                elif dias == 211:
-                    rango = '211'
-                elif dias >= 212:
-                    rango = 'Cartera Castigada'
-                else:
-                    rango = '0'
-
-                r = {col: None for col in target_columns}
-                r[contrato_col] = contract_id
-                r[llave_col] = llave
-                r[producto_col] = producto
-                r[cliente_col] = cliente
-                r[telefono_col] = telefono
-                r[correo_col] = correo
-                r[cedula_col] = cedula
-                r[ciudad_col] = ciudad
-                r[capital_col] = capital
-                r[gastos_col] = gastos
-                r[deuda_col] = deuda
-                r[dias_col] = dias
-                r[cuotas_col] = cuotas
-
-                # Campos calculados
-                pago_cap_col = cols_by_lower.get('%_pago_capital')
-                if pago_cap_col:
-                    r[pago_cap_col] = f"{int(factor_capital * 100)}%"
-                desc_gastos_col = cols_by_lower.get('%_descuento_gastos')
-                if desc_gastos_col:
-                    r[desc_gastos_col] = f"{int(factor_gastos * 100)}%"
-                vfd_col = cols_by_lower.get('valor_final_descuento')
-                if vfd_col:
-                    r[vfd_col] = valor_final_descuento
-
-                # Opciones de pago
-                quota_col = cols_by_lower.get('valor_opcion_1')
-                if quota_col:
-                    r[quota_col] = quota
-                op2_1 = cols_by_lower.get('valor_1_cuota_opcion_2')
-                if op2_1:
-                    r[op2_1] = deuda
-                op2_2 = cols_by_lower.get('valor_2_cuotas_opcion_2')
-                if op2_2:
-                    r[op2_2] = round(deuda / 2) if deuda else 0
-                op2_3 = cols_by_lower.get('valor_3_cuotas_opcion_2')
-                if op2_3:
-                    r[op2_3] = round(deuda / 3) if deuda > 600000 else None
-                op3_1 = cols_by_lower.get('valor_1_cuota_opcion_3')
-                if op3_1:
-                    r[op3_1] = valor_final_descuento
-                op3_2 = cols_by_lower.get('valor_2_cuotas_opcion_3')
-                if op3_2:
-                    r[op3_2] = round(valor_final_descuento / 2) if valor_final_descuento else 0
-                op3_3 = cols_by_lower.get('valor_3_cuotas_opcion_3')
-                if op3_3:
-                    r[op3_3] = round(valor_final_descuento / 3) if valor_final_descuento > 600000 else None
-                op4_1 = cols_by_lower.get('valor_1_cuota_opcion_4')
-                if op4_1:
-                    r[op4_1] = capital
-                op4_2 = cols_by_lower.get('valor_2_cuotas_opcion_4')
-                if op4_2:
-                    r[op4_2] = round(capital / 2) if capital else 0
-                op4_3 = cols_by_lower.get('valor_3_cuotas_opcion_4')
-                if op4_3:
-                    r[op4_3] = round(capital / 3) if capital > 600000 else None
-
-                comision_col = cols_by_lower.get('comision')
-                if comision_col:
-                    r[comision_col] = comision
-                rango_col = cols_by_lower.get('rango')
-                if rango_col:
-                    r[rango_col] = rango
-
-                desc1 = cols_by_lower.get('descripcion_opcion_1')
-                if desc1:
-                    r[desc1] = 'Pagar_1_cuota__para_normalizar'
-                desc2 = cols_by_lower.get('descripcion_opcion_2')
-                if desc2:
-                    r[desc2] = 'Pagar_de_1_a_3_cuotas'
-                desc3 = cols_by_lower.get('descripcion_opcion_3')
-                if desc3:
-                    r[desc3] = 'descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k'
-                desc4 = cols_by_lower.get('descripcion_opcion_4')
-                if desc4:
-                    r[desc4] = 'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k'
-
-                rows_data.append(r)
+            rows_data = [
+                self._build_missing_contract_row(
+                    row, target_columns, cols_by_lower, base_cols,
+                )
+                for row in all_rows
+            ]
 
             return pd.DataFrame(rows_data)
 
@@ -1348,20 +1430,32 @@ ORDER BY c.id ASC;
             )
 
         if overdue_installments_map is not None:
-            def _resolve_overdue_installments(contract_value) -> int:
-                contract_id = self._safe_int(contract_value)
-                if contract_id is None:
-                    return 0
-                return int(overdue_installments_map.get(contract_id, 0))
+            self._apply_overdue_installments(
+                df, contract_col, overdue_installments_col, overdue_installments_map,
+            )
 
-            if overdue_installments_col:
-                df[overdue_installments_col] = df[contract_col].apply(
-                    _resolve_overdue_installments
-                )
-            else:
-                df["Cuotas Atrasadas"] = df[contract_col].apply(
-                    _resolve_overdue_installments
-                )
+    def _apply_overdue_installments(
+        self,
+        df: pd.DataFrame,
+        contract_col: str,
+        overdue_installments_col: Optional[str],
+        overdue_installments_map: Dict[int, int],
+    ) -> None:
+        """Aplica las cuotas atrasadas operativas a la columna correspondiente."""
+        def _resolve_overdue_installments(contract_value) -> int:
+            contract_id = self._safe_int(contract_value)
+            if contract_id is None:
+                return 0
+            return int(overdue_installments_map.get(contract_id, 0))
+
+        if overdue_installments_col:
+            df[overdue_installments_col] = df[contract_col].apply(
+                _resolve_overdue_installments
+            )
+        else:
+            df[CUOTAS_ATRASADAS_COL] = df[contract_col].apply(
+                _resolve_overdue_installments
+            )
     
     def calculate_distribution_metrics(self) -> Dict:
         """
@@ -1456,27 +1550,10 @@ ORDER BY c.id ASC;
         cobyser_pct = float(metrics.get("cobyser_percent", 0) or 0)
 
         audience_key = str(audience or "general").strip().lower()
-        rows = []
-        total_count_row = total_global
-
-        if audience_key == "serlefin":
-            rows = [("Serlefin (User 81)", serlefin_total, serlefin_pct)]
-            total_count_row = serlefin_total
-            audience_note = (
-                "<p><small>Vista filtrada: este correo solo muestra Serlefin.</small></p>"
-            )
-        elif audience_key == "cobyser":
-            rows = [("Cobyser (User 45)", cobyser_total, cobyser_pct)]
-            total_count_row = cobyser_total
-            audience_note = (
-                "<p><small>Vista filtrada: este correo solo muestra Cobyser.</small></p>"
-            )
-        else:
-            rows = [
-                ("Serlefin (User 81)", serlefin_total, serlefin_pct),
-                ("Cobyser (User 45)", cobyser_total, cobyser_pct),
-            ]
-            audience_note = ""
+        rows, total_count_row, audience_note = self._metrics_audience_rows(
+            audience_key, serlefin_total, cobyser_total, total_global,
+            serlefin_pct, cobyser_pct,
+        )
 
         rows_html = ""
         for name, qty, pct in rows:
@@ -1507,20 +1584,54 @@ ORDER BY c.id ASC;
         """
 
         if audience_key == "general":
-            cumple_icon = "OK" if metrics.get("cumple_60_40") else "ALERTA"
-            cumple_text = "SI CUMPLE" if metrics.get("cumple_60_40") else "NO CUMPLE"
-            html += f"""
+            html += self._metrics_general_section(metrics)
+
+        return html
+
+    @staticmethod
+    def _metrics_audience_rows(
+        audience_key: str,
+        serlefin_total: int, cobyser_total: int, total_global: int,
+        serlefin_pct: float, cobyser_pct: float,
+    ) -> Tuple[list, int, str]:
+        """Filas/totales/nota segun la audiencia del correo de metricas."""
+        if audience_key == "serlefin":
+            rows = [("Serlefin (User 81)", serlefin_total, serlefin_pct)]
+            total_count_row = serlefin_total
+            audience_note = (
+                "<p><small>Vista filtrada: este correo solo muestra Serlefin.</small></p>"
+            )
+        elif audience_key == "cobyser":
+            rows = [("Cobyser (User 45)", cobyser_total, cobyser_pct)]
+            total_count_row = cobyser_total
+            audience_note = (
+                "<p><small>Vista filtrada: este correo solo muestra Cobyser.</small></p>"
+            )
+        else:
+            rows = [
+                ("Serlefin (User 81)", serlefin_total, serlefin_pct),
+                ("Cobyser (User 45)", cobyser_total, cobyser_pct),
+            ]
+            total_count_row = total_global
+            audience_note = ""
+        return rows, total_count_row, audience_note
+
+    def _metrics_general_section(self, metrics: Dict) -> str:
+        """Seccion HTML extra (cumplimiento + buckets) para la audiencia general."""
+        cumple_icon = "OK" if metrics.get("cumple_60_40") else "ALERTA"
+        cumple_text = "SI CUMPLE" if metrics.get("cumple_60_40") else "NO CUMPLE"
+        html = f"""
             <p style=\"margin-top: 15px;\">
                 <strong>{cumple_icon} Cumplimiento 60/40:</strong> {cumple_text}<br>
                 <small>Meta: Serlefin 60% / Cobyser 40% (tolerancia +/-2%)</small>
             </p>
             """
 
-            bucket_rows = metrics.get("bucket_distribution", []) or []
-            if bucket_rows:
-                bucket_rows_html = ""
-                for row in bucket_rows:
-                    bucket_rows_html += f"""
+        bucket_rows = metrics.get("bucket_distribution", []) or []
+        if bucket_rows:
+            bucket_rows_html = ""
+            for row in bucket_rows:
+                bucket_rows_html += f"""
                     <tr>
                         <td style=\"border: 1px solid #ddd; padding: 8px;\"><strong>{row.get('bucket', '')}</strong></td>
                         <td style=\"border: 1px solid #ddd; padding: 8px; text-align: center;\">{int(row.get('total', 0) or 0)}</td>
@@ -1531,7 +1642,7 @@ ORDER BY c.id ASC;
                     </tr>
                     """
 
-                html += f"""
+            html += f"""
                 <h3 style=\"margin-top: 20px;\">Distribucion por Bucket (objetivo 60/40)</h3>
                 <table style=\"width:100%; border-collapse: collapse;\">
                     <tr style=\"background-color: #f0f0f0;\">

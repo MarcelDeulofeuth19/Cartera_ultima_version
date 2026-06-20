@@ -244,7 +244,7 @@ class Settings(BaseSettings):
         return self.COBYSER_USERS + self.SERLEFIN_USERS
 
     @property
-    def pagare_excluded_status_ids(self) -> List[int]:
+    def pagare_excluded_status_id_list(self) -> List[int]:
         """IDs de estado de pagaré (endosos a afianzadora) que se excluyen de asignación."""
         if not self.PAGARE_EXCLUDE_ENABLED:
             return []
@@ -266,33 +266,33 @@ class Settings(BaseSettings):
         return recipients
 
     @property
-    def notification_recipients(self) -> List[str]:
+    def notification_recipient_list(self) -> List[str]:
         """
         Destinatarios que reciben notificación con ambas bases (Serlefin y Cobyser).
         """
         return self._parse_recipients(self.NOTIFICATION_RECIPIENTS)
 
     @property
-    def cobyser_notification_recipients(self) -> List[str]:
+    def cobyser_notification_recipient_list(self) -> List[str]:
         """
         Destinatarios que reciben notificación y base de Cobyser.
         """
         return self._parse_recipients(self.COBYSER_NOTIFICATION_RECIPIENTS)
 
     @property
-    def serlefin_notification_recipients(self) -> List[str]:
+    def serlefin_notification_recipient_list(self) -> List[str]:
         """
         Destinatarios que reciben solo notificación de Serlefin (sin adjunto).
         """
         return self._parse_recipients(self.SERLEFIN_NOTIFICATION_RECIPIENTS)
 
     @property
-    def monthly_report_to(self) -> List[str]:
+    def monthly_report_to_list(self) -> List[str]:
         """Destinatarios principales del informe mensual de finalización de ciclo."""
         return self._parse_recipients(self.MONTHLY_REPORT_TO)
 
     @property
-    def monthly_report_cc(self) -> List[str]:
+    def monthly_report_cc_list(self) -> List[str]:
         """Destinatarios en copia (CC) del informe mensual."""
         return self._parse_recipients(self.MONTHLY_REPORT_CC)
 
@@ -356,7 +356,7 @@ class Settings(BaseSettings):
         return docs
 
     @property
-    def auto_assignment_weekdays(self) -> List[int]:
+    def auto_assignment_weekday_list(self) -> List[int]:
         """
         Días de ejecución del scheduler en formato weekday de Python.
         """
@@ -366,7 +366,7 @@ class Settings(BaseSettings):
         )
 
     @property
-    def auto_notification_weekdays(self) -> List[int]:
+    def auto_notification_weekday_list(self) -> List[int]:
         """
         Días de envío de notificaciones en formato weekday de Python.
         """
@@ -376,7 +376,7 @@ class Settings(BaseSettings):
         )
 
     @property
-    def serlefin_attachment_exception_recipients(self) -> List[str]:
+    def serlefin_attachment_exception_recipient_list(self) -> List[str]:
         """
         Destinatarios para excepción de adjunto de Serlefin.
         """
@@ -388,7 +388,7 @@ class Settings(BaseSettings):
         return recipients
 
     @property
-    def cors_allowed_origins(self) -> List[str]:
+    def cors_allowed_origin_list(self) -> List[str]:
         """
         Lista de orígenes CORS permitidos. "*" se mantiene como comodín.
         """
@@ -403,7 +403,7 @@ class Settings(BaseSettings):
         return origins or ["*"]
 
     @property
-    def cors_allow_credentials(self) -> bool:
+    def cors_credentials_enabled(self) -> bool:
         """
         Controla el envío de credenciales en CORS. Configurable por entorno.
         Recomendación: usar False con orígenes "*" (no conforme a la especificación

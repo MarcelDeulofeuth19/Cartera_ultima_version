@@ -17,6 +17,9 @@ from app.services.report_service import ReportService
 
 logger = logging.getLogger(__name__)
 
+PROCESS_ALREADY_RUNNING = "Process already running"
+INTERNAL_SERVER_ERROR = "Internal server error"
+
 router = APIRouter(
     prefix="/api/v1",
     tags=["assignment"]

@@ -11,6 +11,67 @@ router = APIRouter(
     tags=["reports"]
 )
 
+def _trigger_report_generation(background_tasks: BackgroundTasks, house_key: str):
+    from app.database.connections import db_manager
+    from app.services.assignment_service import AssignmentService
+
+    def run_report_generation():
+        try:
+            with db_manager.get_mysql_session() as mysql_session:
+                with db_manager.get_postgres_session() as postgres_session:
+                    service = AssignmentService(mysql_session=mysql_session, postgres_session=postgres_session)
+                    service.generate_and_send_reports()
+        except Exception as e:
+            logger.error(f"Error auto-generando reportes: {e}")
+
+    # Lanzar la generacion en background para no bloquear
+    background_tasks.add_task(run_report_generation)
+    return JSONResponse(
+        status_code=404,
+        content={"detail": f"No se encontró el reporte de {house_key}. Se acaba de disparar la generación automática. Por favor intenta de nuevo en 15 minutos."}
+    )
+
+
+def _build_json_response(latest_file, product):
+    try:
+        import pandas as pd
+
+        def _records(frame):
+            return frame.replace({float('nan'): None}).to_dict(orient="records")
+
+        requested = (product or "phone").strip().lower()
+
+        # Comportamiento ACTUAL (sin product o 'phone'): primera hoja del Excel.
+        if requested == "phone":
+            df = pd.read_excel(latest_file)
+            return JSONResponse(content=_records(df))
+
+        # NUEVO: todas las hojas en un solo objeto por nombre de hoja.
+        if requested == "all":
+            sheets = pd.read_excel(latest_file, sheet_name=None)
+            return JSONResponse(content={name: _records(frame) for name, frame in sheets.items()})
+
+        # NUEVO: una hoja Twist puntual. Si el archivo es viejo (1 sola hoja)
+        # y no existe la hoja, se devuelve lista vacia (no rompe).
+        sheet_by_product = {"twist1": "Twist1", "twist2": "Twist2"}
+        if requested in sheet_by_product:
+            try:
+                df = pd.read_excel(latest_file, sheet_name=sheet_by_product[requested])
+            except (ValueError, KeyError):
+                return JSONResponse(content=[])
+            return JSONResponse(content=_records(df))
+
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "product invalido. Use 'phone', 'twist1', 'twist2' o 'all'."}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error al leer el archivo Excel: {str(e)}"}
+        )
+
+
 @router.get("/download/{house_key}", summary="Descargar reporte por casa de cobranza")
 async def download_report(
     house_key: str,
@@ -48,66 +109,13 @@ async def download_report(
     )
     
     if not candidates:
-        from app.database.connections import db_manager
-        from app.services.assignment_service import AssignmentService
-        
-        def run_report_generation():
-            try:
-                with db_manager.get_mysql_session() as mysql_session:
-                    with db_manager.get_postgres_session() as postgres_session:
-                        service = AssignmentService(mysql_session=mysql_session, postgres_session=postgres_session)
-                        service.generate_and_send_reports()
-            except Exception as e:
-                logger.error(f"Error auto-generando reportes: {e}")
-                
-        # Lanzar la generacion en background para no bloquear
-        background_tasks.add_task(run_report_generation)
-        return JSONResponse(
-            status_code=404,
-            content={"detail": f"No se encontró el reporte de {house_key}. Se acaba de disparar la generación automática. Por favor intenta de nuevo en 15 minutos."}
-        )
-        
+        return _trigger_report_generation(background_tasks, house_key)
+
     latest_file = candidates[0]
-    
+
     if format == "json":
-        try:
-            import pandas as pd
+        return _build_json_response(latest_file, product)
 
-            def _records(frame):
-                return frame.replace({float('nan'): None}).to_dict(orient="records")
-
-            requested = (product or "phone").strip().lower()
-
-            # Comportamiento ACTUAL (sin product o 'phone'): primera hoja del Excel.
-            if requested == "phone":
-                df = pd.read_excel(latest_file)
-                return JSONResponse(content=_records(df))
-
-            # NUEVO: todas las hojas en un solo objeto por nombre de hoja.
-            if requested == "all":
-                sheets = pd.read_excel(latest_file, sheet_name=None)
-                return JSONResponse(content={name: _records(frame) for name, frame in sheets.items()})
-
-            # NUEVO: una hoja Twist puntual. Si el archivo es viejo (1 sola hoja)
-            # y no existe la hoja, se devuelve lista vacia (no rompe).
-            sheet_by_product = {"twist1": "Twist1", "twist2": "Twist2"}
-            if requested in sheet_by_product:
-                try:
-                    df = pd.read_excel(latest_file, sheet_name=sheet_by_product[requested])
-                except (ValueError, KeyError):
-                    return JSONResponse(content=[])
-                return JSONResponse(content=_records(df))
-
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "product invalido. Use 'phone', 'twist1', 'twist2' o 'all'."}
-            )
-        except Exception as e:
-            return JSONResponse(
-                status_code=500,
-                content={"detail": f"Error al leer el archivo Excel: {str(e)}"}
-            )
-    
     return FileResponse(
         path=latest_file,
         filename=latest_file.name,
@@ -148,8 +156,7 @@ async def get_current_assignments():
         except Exception as e:
             logger.error(f"Error leyendo caché: {e}")
             # Si falla leerlo, continuar para recrearlo
-            pass
-            
+
     logger.info("Caché no encontrado para hoy. Consultando la base de datos por primera vez...")
     
     with db_manager.get_postgres_session() as postgres_session:

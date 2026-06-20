@@ -21,6 +21,8 @@ from app.services.manual_fixed_service import ManualFixedService
 
 logger = logging.getLogger(__name__)
 
+SQL_SET_LOCK_TIMEOUT_2S = "SET LOCAL lock_timeout = '2s'"
+
 
 class AssignmentService:
     """
@@ -86,7 +88,7 @@ class AssignmentService:
                 return True
 
             # Evita esperas largas por lock en horario operativo.
-            self.postgres_session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            self.postgres_session.execute(text(SQL_SET_LOCK_TIMEOUT_2S))
             self.postgres_session.execute(text("SET LOCAL statement_timeout = '10s'"))
             self.postgres_session.execute(
                 text(
@@ -141,7 +143,7 @@ class AssignmentService:
                 self._history_dpd_actual_column_ready = True
                 return True
 
-            self.postgres_session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            self.postgres_session.execute(text(SQL_SET_LOCK_TIMEOUT_2S))
             self.postgres_session.execute(text("SET LOCAL statement_timeout = '10s'"))
             self.postgres_session.execute(
                 text(
@@ -173,7 +175,7 @@ class AssignmentService:
         if self._producto_column_ready:
             return True
         try:
-            self.postgres_session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            self.postgres_session.execute(text(SQL_SET_LOCK_TIMEOUT_2S))
             self.postgres_session.execute(text("SET LOCAL statement_timeout = '15s'"))
             for table in ("contract_advisors", "contract_advisors_history"):
                 self.postgres_session.execute(
@@ -261,22 +263,7 @@ class AssignmentService:
             return stats
         stats["states_loaded"] = len(state_map)
 
-        dpd_map: Dict[int, Optional[str]] = {}
-        try:
-            days_map = self._require_contract_service().get_days_overdue_for_contracts(
-                sorted_contract_ids
-            )
-            for contract_id in sorted_contract_ids:
-                days = days_map.get(contract_id)
-                dpd_map[contract_id] = get_dpd_range(
-                    int(days) if days is not None else None
-                )
-        except Exception as dpd_error:
-            stats["dpd_lookup_failed"] = len(sorted_contract_ids)
-            logger.warning(
-                "No se pudo sincronizar dpd_actual en esta corrida: %s",
-                dpd_error,
-            )
+        dpd_map = self._load_dpd_map_for_contracts(sorted_contract_ids, stats)
         stats["dpd_loaded"] = sum(1 for value in dpd_map.values() if value)
 
         params = [
@@ -293,90 +280,11 @@ class AssignmentService:
         ]
 
         try:
-            # Sincronizacion en bloque:
-            # 1) cargar estados a tabla temporal
-            # 2) actualizar contract_advisors con un solo UPDATE ... FROM
-            self.postgres_session.execute(text("SET LOCAL lock_timeout = '3s'"))
-            self.postgres_session.execute(text("SET LOCAL statement_timeout = '15min'"))
-            self.postgres_session.execute(
-                text(
-                    """
-                    CREATE TEMP TABLE IF NOT EXISTS tmp_estado_actual_sync (
-                        contract_id INTEGER PRIMARY KEY,
-                        estado_actual VARCHAR(100),
-                        dpd_actual VARCHAR(20)
-                    ) ON COMMIT DROP
-                    """
-                )
+            rows_updated, history_rows_updated = self._bulk_sync_estado_actual(
+                params, sync_history_dpd
             )
-            self.postgres_session.execute(text("TRUNCATE tmp_estado_actual_sync"))
-
-            batch_size = 1000
-            for index in range(0, len(params), batch_size):
-                chunk = params[index : index + batch_size]
-                self.postgres_session.execute(
-                    text(
-                        """
-                        INSERT INTO tmp_estado_actual_sync (contract_id, estado_actual, dpd_actual)
-                        VALUES (:contract_id, :estado_actual, :dpd_actual)
-                        ON CONFLICT (contract_id)
-                        DO UPDATE SET
-                            estado_actual = EXCLUDED.estado_actual,
-                            dpd_actual = EXCLUDED.dpd_actual
-                        """
-                    ),
-                    chunk,
-                )
-
-            result = self.postgres_session.execute(
-                text(
-                    """
-                    UPDATE alocreditindicators.contract_advisors ca
-                    SET estado_actual = t.estado_actual
-                    FROM tmp_estado_actual_sync t
-                    WHERE ca.contract_id = t.contract_id
-                      AND ca.user_id IN (45, 81)
-                      AND ca.estado_actual IS DISTINCT FROM t.estado_actual
-                    """
-                )
-            )
-            if sync_history_dpd:
-                history_result = self.postgres_session.execute(
-                    text(
-                        """
-                        UPDATE alocreditindicators.contract_advisors_history h
-                        SET
-                            estado_actual = t.estado_actual,
-                            dpd_actual = COALESCE(t.dpd_actual, h.dpd_actual)
-                        FROM tmp_estado_actual_sync t
-                        WHERE h.contract_id = t.contract_id
-                          AND h."Fecha Terminal" IS NULL
-                          AND (
-                              h.estado_actual IS DISTINCT FROM t.estado_actual
-                              OR (
-                                  t.dpd_actual IS NOT NULL
-                                  AND h.dpd_actual IS DISTINCT FROM t.dpd_actual
-                              )
-                          )
-                        """
-                    )
-                )
-            else:
-                history_result = self.postgres_session.execute(
-                    text(
-                        """
-                        UPDATE alocreditindicators.contract_advisors_history h
-                        SET estado_actual = t.estado_actual
-                        FROM tmp_estado_actual_sync t
-                        WHERE h.contract_id = t.contract_id
-                          AND h."Fecha Terminal" IS NULL
-                          AND h.estado_actual IS DISTINCT FROM t.estado_actual
-                        """
-                    )
-                )
-            self.postgres_session.commit()
-            stats["rows_updated"] = int(result.rowcount or 0)
-            stats["history_rows_updated"] = int(history_result.rowcount or 0)
+            stats["rows_updated"] = rows_updated
+            stats["history_rows_updated"] = history_rows_updated
             logger.info(
                 "estado_actual/dpd_actual actualizado: contratos=%s, contract_advisors=%s, history=%s, dpd_cargados=%s",
                 stats["contracts_considered"],
@@ -390,6 +298,124 @@ class AssignmentService:
             logger.error("Error actualizando estado_actual/dpd_actual: %s", error)
             stats["sync_failed"] = len(params)
             return stats
+
+    def _load_dpd_map_for_contracts(
+        self,
+        sorted_contract_ids: List[int],
+        stats: Dict[str, int],
+    ) -> Dict[int, Optional[str]]:
+        """
+        Carga el mapa de rangos DPD por contrato; registra fallos en stats.
+        """
+        dpd_map: Dict[int, Optional[str]] = {}
+        try:
+            days_map = self._require_contract_service().get_days_overdue_for_contracts(
+                sorted_contract_ids
+            )
+            for contract_id in sorted_contract_ids:
+                days = days_map.get(contract_id)
+                dpd_map[contract_id] = get_dpd_range(
+                    int(days) if days is not None else None
+                )
+        except Exception as dpd_error:
+            stats["dpd_lookup_failed"] = len(sorted_contract_ids)
+            logger.warning(
+                "No se pudo sincronizar dpd_actual en esta corrida: %s",
+                dpd_error,
+            )
+        return dpd_map
+
+    def _bulk_sync_estado_actual(
+        self,
+        params: List[Dict[str, Any]],
+        sync_history_dpd: bool,
+    ) -> Tuple[int, int]:
+        """
+        Sincroniza estado_actual/dpd_actual en bloque via tabla temporal.
+
+        1) cargar estados a tabla temporal
+        2) actualizar contract_advisors con un solo UPDATE ... FROM
+        """
+        self.postgres_session.execute(text("SET LOCAL lock_timeout = '3s'"))
+        self.postgres_session.execute(text("SET LOCAL statement_timeout = '15min'"))
+        self.postgres_session.execute(
+            text(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS tmp_estado_actual_sync (
+                    contract_id INTEGER PRIMARY KEY,
+                    estado_actual VARCHAR(100),
+                    dpd_actual VARCHAR(20)
+                ) ON COMMIT DROP
+                """
+            )
+        )
+        self.postgres_session.execute(text("TRUNCATE tmp_estado_actual_sync"))
+
+        batch_size = 1000
+        for index in range(0, len(params), batch_size):
+            chunk = params[index : index + batch_size]
+            self.postgres_session.execute(
+                text(
+                    """
+                    INSERT INTO tmp_estado_actual_sync (contract_id, estado_actual, dpd_actual)
+                    VALUES (:contract_id, :estado_actual, :dpd_actual)
+                    ON CONFLICT (contract_id)
+                    DO UPDATE SET
+                        estado_actual = EXCLUDED.estado_actual,
+                        dpd_actual = EXCLUDED.dpd_actual
+                    """
+                ),
+                chunk,
+            )
+
+        result = self.postgres_session.execute(
+            text(
+                """
+                UPDATE alocreditindicators.contract_advisors ca
+                SET estado_actual = t.estado_actual
+                FROM tmp_estado_actual_sync t
+                WHERE ca.contract_id = t.contract_id
+                  AND ca.user_id IN (45, 81)
+                  AND ca.estado_actual IS DISTINCT FROM t.estado_actual
+                """
+            )
+        )
+        if sync_history_dpd:
+            history_result = self.postgres_session.execute(
+                text(
+                    """
+                    UPDATE alocreditindicators.contract_advisors_history h
+                    SET
+                        estado_actual = t.estado_actual,
+                        dpd_actual = COALESCE(t.dpd_actual, h.dpd_actual)
+                    FROM tmp_estado_actual_sync t
+                    WHERE h.contract_id = t.contract_id
+                      AND h."Fecha Terminal" IS NULL
+                      AND (
+                          h.estado_actual IS DISTINCT FROM t.estado_actual
+                          OR (
+                              t.dpd_actual IS NOT NULL
+                              AND h.dpd_actual IS DISTINCT FROM t.dpd_actual
+                          )
+                      )
+                    """
+                )
+            )
+        else:
+            history_result = self.postgres_session.execute(
+                text(
+                    """
+                    UPDATE alocreditindicators.contract_advisors_history h
+                    SET estado_actual = t.estado_actual
+                    FROM tmp_estado_actual_sync t
+                    WHERE h.contract_id = t.contract_id
+                      AND h."Fecha Terminal" IS NULL
+                      AND h.estado_actual IS DISTINCT FROM t.estado_actual
+                    """
+                )
+            )
+        self.postgres_session.commit()
+        return int(result.rowcount or 0), int(history_result.rowcount or 0)
 
     @staticmethod
     def _compute_house_quotas(total: int, serlefin_ratio: float) -> Dict[int, int]:
@@ -868,8 +894,6 @@ class AssignmentService:
     
     def clean_assignments(
         self,
-        fixed_contracts: Dict[int, Set[int]],
-        current_assignments: Dict[int, Set[int]],
         max_days_threshold: int,
     ) -> Dict[str, int]:
         """
@@ -973,6 +997,31 @@ class AssignmentService:
         }
 
         # Se reparte por bucket en orden de menor atraso primero.
+        self._distribute_contracts_by_bucket(
+            contracts_by_bucket,
+            new_assignments,
+            range_stats,
+            serlefin_ratio,
+        )
+
+        self._log_balance_summary(
+            new_assignments,
+            range_stats,
+            skipped_without_bucket,
+        )
+
+        return new_assignments, contracts_days_map
+
+    def _distribute_contracts_by_bucket(
+        self,
+        contracts_by_bucket: Dict[str, List[Dict[str, int]]],
+        new_assignments: Dict[int, List[int]],
+        range_stats: Dict[str, Dict[str, int]],
+        serlefin_ratio: float,
+    ) -> None:
+        """
+        Reparte por bucket (menor atraso primero) mutando new_assignments y range_stats.
+        """
         for dpd_range in reversed(ASSIGNMENT_DPD_ORDER):
             bucket_contracts = contracts_by_bucket.get(dpd_range, [])
             bucket_total = len(bucket_contracts)
@@ -1006,6 +1055,15 @@ class AssignmentService:
                 else:
                     range_stats[dpd_range]["assigned_45"] += 1
 
+    @staticmethod
+    def _log_balance_summary(
+        new_assignments: Dict[int, List[int]],
+        range_stats: Dict[str, Dict[str, int]],
+        skipped_without_bucket: int,
+    ) -> None:
+        """
+        Loguea el resumen del balanceo (totales, porcentajes y buckets).
+        """
         total_45 = len(new_assignments[45])
         total_81 = len(new_assignments[81])
         total_assigned_now = total_45 + total_81
@@ -1044,8 +1102,6 @@ class AssignmentService:
                 int(stats.get("assigned_81", 0)),
                 int(stats.get("assigned_45", 0)),
             )
-
-        return new_assignments, contracts_days_map
 
     def save_assignments(
         self,
@@ -1105,25 +1161,9 @@ class AssignmentService:
             logger.info(
                 f"Verificando duplicados para {len(eligible_contract_ids)} contratos unicos..."
             )
-            existing_query = self.postgres_session.query(
-                ContractAdvisor.contract_id
-            ).filter(
-                ContractAdvisor.contract_id.in_(eligible_contract_ids)
+            existing_contract_ids = self._query_existing_contract_ids(
+                eligible_contract_ids, producto
             )
-            if producto == "PHONE":
-                existing_query = existing_query.filter(
-                    or_(
-                        ContractAdvisor.producto == "PHONE",
-                        ContractAdvisor.producto.is_(None),
-                    )
-                )
-            else:
-                existing_query = existing_query.filter(
-                    ContractAdvisor.producto == producto
-                )
-            existing_assignments = existing_query.all()
-
-            existing_contract_ids = set(int(row[0]) for row in existing_assignments)
             rows_to_insert: List[Dict[str, Any]] = []
             states_cache: Dict[int, str] = {}
 
@@ -1183,38 +1223,14 @@ class AssignmentService:
 
             history_stats = {"total_registered": 0}
             if inserted_contract_ids:
-                missing_days = [
-                    contract_id
-                    for contract_id in inserted_contract_ids
-                    if int(contract_id) not in days_cache
-                ]
-                if missing_days:
-                    fetched_days = self._require_contract_service().get_days_overdue_for_contracts(
-                        missing_days
-                    )
-                    days_cache.update(fetched_days)
-
-                days_map = {
-                    int(contract_id): int(days_cache.get(contract_id, 0))
-                    for contract_id in inserted_contract_ids
-                }
-                states_for_history = {
-                    int(contract_id): str(states_cache.get(contract_id, "PENDIENTE"))
-                    for contract_id in inserted_contract_ids
-                }
-                assignment_metadata = self._build_history_metadata_from_days(
-                    days_map,
-                    tipo=default_tipo,
-                    states_map=states_for_history,
-                    tipo_map=tipo_map,
-                    producto=producto,
-                )
-
-                logger.info("Registrando asignaciones en historial...")
-                history_stats = self.history_service.register_assignments(
+                history_stats = self._register_assignments_history(
+                    inserted_contract_ids,
                     new_assignments,
-                    assignment_metadata=assignment_metadata,
-                    default_tipo=default_tipo,
+                    days_cache,
+                    states_cache,
+                    default_tipo,
+                    tipo_map,
+                    producto,
                 )
 
             logger.info("Asignaciones guardadas:")
@@ -1231,6 +1247,80 @@ class AssignmentService:
             logger.error(f"Error al guardar asignaciones: {e}")
             self.postgres_session.rollback()
             raise
+
+    def _query_existing_contract_ids(
+        self,
+        eligible_contract_ids: Set[int],
+        producto: str,
+    ) -> Set[int]:
+        """
+        Devuelve los contract_ids ya existentes en contract_advisors para el producto.
+        """
+        existing_query = self.postgres_session.query(
+            ContractAdvisor.contract_id
+        ).filter(
+            ContractAdvisor.contract_id.in_(eligible_contract_ids)
+        )
+        if producto == "PHONE":
+            existing_query = existing_query.filter(
+                or_(
+                    ContractAdvisor.producto == "PHONE",
+                    ContractAdvisor.producto.is_(None),
+                )
+            )
+        else:
+            existing_query = existing_query.filter(
+                ContractAdvisor.producto == producto
+            )
+        existing_assignments = existing_query.all()
+        return set(int(row[0]) for row in existing_assignments)
+
+    def _register_assignments_history(
+        self,
+        inserted_contract_ids: List[int],
+        new_assignments: Dict[int, List[int]],
+        days_cache: Dict[int, int],
+        states_cache: Dict[int, str],
+        default_tipo: str,
+        tipo_map: Optional[Dict[int, str]],
+        producto: str,
+    ) -> Dict[str, int]:
+        """
+        Construye metadatos y registra las asignaciones nuevas en el historial.
+        """
+        missing_days = [
+            contract_id
+            for contract_id in inserted_contract_ids
+            if int(contract_id) not in days_cache
+        ]
+        if missing_days:
+            fetched_days = self._require_contract_service().get_days_overdue_for_contracts(
+                missing_days
+            )
+            days_cache.update(fetched_days)
+
+        days_map = {
+            int(contract_id): int(days_cache.get(contract_id, 0))
+            for contract_id in inserted_contract_ids
+        }
+        states_for_history = {
+            int(contract_id): str(states_cache.get(contract_id, "PENDIENTE"))
+            for contract_id in inserted_contract_ids
+        }
+        assignment_metadata = self._build_history_metadata_from_days(
+            days_map,
+            tipo=default_tipo,
+            states_map=states_for_history,
+            tipo_map=tipo_map,
+            producto=producto,
+        )
+
+        logger.info("Registrando asignaciones en historial...")
+        return self.history_service.register_assignments(
+            new_assignments,
+            assignment_metadata=assignment_metadata,
+            default_tipo=default_tipo,
+        )
 
     def assign_cobyser_franja(
         self,
@@ -1358,37 +1448,12 @@ class AssignmentService:
                 for user_id, contract_id in assigned_rows
             }
 
-            missing_by_user: Dict[int, Set[int]] = {45: set(), 81: set()}
-            missing_all: Set[int] = set()
-
-            for user_id in settings.USER_IDS:
-                user_fixed_contracts = {
-                    int(contract_id)
-                    for contract_id in fixed_contracts.get(user_id, set())
-                    if int(contract_id) not in blocked_ids
-                }
-                if not user_fixed_contracts:
-                    continue
-
-                for contract_id in user_fixed_contracts:
-                    assigned_user = assigned_user_by_contract.get(contract_id)
-                    if assigned_user is None:
-                        missing_by_user[user_id].add(contract_id)
-                        missing_all.add(contract_id)
-                        continue
-
-                    if assigned_user == int(user_id):
-                        stats["already_assigned"] += 1
-                        continue
-
-                    # No se reasigna automaticamente entre casas para evitar churn diario.
-                    stats["already_assigned"] += 1
-                    logger.warning(
-                        "Contrato fijo %s tiene promesa activa para user %s pero hoy esta en user %s; se mantiene sin mover.",
-                        contract_id,
-                        user_id,
-                        assigned_user,
-                    )
+            missing_by_user, missing_all = self._classify_fixed_contracts(
+                fixed_contracts,
+                blocked_ids,
+                assigned_user_by_contract,
+                stats,
+            )
 
             if not missing_all:
                 logger.info(
@@ -1459,35 +1524,11 @@ class AssignmentService:
                 )
                 return stats
 
-            self._ensure_estado_actual_column()
-            self.postgres_session.bulk_insert_mappings(
-                ContractAdvisor,
+            history_stats = self._persist_fixed_assignments(
                 rows_to_insert,
-            )
-            self.postgres_session.commit()
-
-            inserted_contract_ids: List[int] = []
-            for contract_ids in new_fixed_assignments.values():
-                inserted_contract_ids.extend(contract_ids)
-
-            days_map = {
-                int(contract_id): int(missing_days_map.get(contract_id, 0))
-                for contract_id in inserted_contract_ids
-            }
-            states_for_history = {
-                int(contract_id): str(states_cache.get(contract_id, "PENDIENTE"))
-                for contract_id in inserted_contract_ids
-            }
-            assignment_metadata = self._build_history_metadata_from_days(
-                days_map,
-                tipo="FIJO_PROMESA_ACTIVA",
-                states_map=states_for_history,
-            )
-
-            history_stats = self.history_service.register_assignments(
                 new_fixed_assignments,
-                assignment_metadata=assignment_metadata,
-                default_tipo="FIJO_PROMESA_ACTIVA",
+                missing_days_map,
+                states_cache,
             )
 
             logger.info("Contratos fijos por promesa activa insertados:")
@@ -1510,6 +1551,91 @@ class AssignmentService:
             logger.error(f"Error al asegurar contratos fijos: {e}")
             self.postgres_session.rollback()
             raise
+
+    @staticmethod
+    def _classify_fixed_contracts(
+        fixed_contracts: Dict[int, Set[int]],
+        blocked_ids: Set[int],
+        assigned_user_by_contract: Dict[int, int],
+        stats: Dict[str, int],
+    ) -> Tuple[Dict[int, Set[int]], Set[int]]:
+        """
+        Clasifica contratos fijos en faltantes/ya asignados; muta stats.
+        """
+        missing_by_user: Dict[int, Set[int]] = {45: set(), 81: set()}
+        missing_all: Set[int] = set()
+
+        for user_id in settings.USER_IDS:
+            user_fixed_contracts = {
+                int(contract_id)
+                for contract_id in fixed_contracts.get(user_id, set())
+                if int(contract_id) not in blocked_ids
+            }
+            if not user_fixed_contracts:
+                continue
+
+            for contract_id in user_fixed_contracts:
+                assigned_user = assigned_user_by_contract.get(contract_id)
+                if assigned_user is None:
+                    missing_by_user[user_id].add(contract_id)
+                    missing_all.add(contract_id)
+                    continue
+
+                if assigned_user == int(user_id):
+                    stats["already_assigned"] += 1
+                    continue
+
+                # No se reasigna automaticamente entre casas para evitar churn diario.
+                stats["already_assigned"] += 1
+                logger.warning(
+                    "Contrato fijo %s tiene promesa activa para user %s pero hoy esta en user %s; se mantiene sin mover.",
+                    contract_id,
+                    user_id,
+                    assigned_user,
+                )
+
+        return missing_by_user, missing_all
+
+    def _persist_fixed_assignments(
+        self,
+        rows_to_insert: List[Dict[str, Any]],
+        new_fixed_assignments: Dict[int, List[int]],
+        missing_days_map: Dict[int, int],
+        states_cache: Dict[int, str],
+    ) -> Dict[str, int]:
+        """
+        Inserta contratos fijos y registra su historial; devuelve stats de historial.
+        """
+        self._ensure_estado_actual_column()
+        self.postgres_session.bulk_insert_mappings(
+            ContractAdvisor,
+            rows_to_insert,
+        )
+        self.postgres_session.commit()
+
+        inserted_contract_ids: List[int] = []
+        for contract_ids in new_fixed_assignments.values():
+            inserted_contract_ids.extend(contract_ids)
+
+        days_map = {
+            int(contract_id): int(missing_days_map.get(contract_id, 0))
+            for contract_id in inserted_contract_ids
+        }
+        states_for_history = {
+            int(contract_id): str(states_cache.get(contract_id, "PENDIENTE"))
+            for contract_id in inserted_contract_ids
+        }
+        assignment_metadata = self._build_history_metadata_from_days(
+            days_map,
+            tipo="FIJO_PROMESA_ACTIVA",
+            states_map=states_for_history,
+        )
+
+        return self.history_service.register_assignments(
+            new_fixed_assignments,
+            assignment_metadata=assignment_metadata,
+            default_tipo="FIJO_PROMESA_ACTIVA",
+        )
 
     def execute_assignment_process(self) -> Dict:
         """
@@ -1550,7 +1676,7 @@ class AssignmentService:
             "started_at": process_start.isoformat(),
             "notification_policy": {
                 "timezone": settings.AUTO_ASSIGNMENT_TIMEZONE,
-                "weekdays": settings.auto_notification_weekdays,
+                "weekdays": settings.auto_notification_weekday_list,
                 "local_day": notification_local_day,
                 "enabled_today": notifications_allowed_today,
             },
@@ -1683,25 +1809,7 @@ class AssignmentService:
                 producto="PHONE",
             )
 
-            # ============================================================
-            # Productos Twist 1.0 y Twist 2.0 -> tablas propias dedicadas
-            # (contract_advisors_twist / contract_advisors_twist2). Mismas
-            # reglas que la imagen (franja 31-60 impar -> Cobyser; 61-240 40/60).
-            # Aislado del flujo Phone: un fallo aqui NO aborta la corrida Phone
-            # ya persistida. Import local para evitar dependencia circular.
-            # ============================================================
-            try:
-                from app.services.twist_assignment_service import TwistAssignmentService
-
-                twist_service = TwistAssignmentService(
-                    postgres_session=self.postgres_session,
-                    contract_service=self.contract_service,
-                )
-                results["twist1_stats"] = twist_service.run_twist1()
-                results["twist2_stats"] = twist_service.run_twist2()
-            except Exception as twist_error:
-                logger.error("Error en asignacion Twist (PHONE no afectado): %s", twist_error)
-                results["twist_error"] = str(twist_error)
+            self._run_twist_assignments(results)
 
             current_assignments_after_insert = self.get_current_assignments()
             estado_stats = self.refresh_estado_actual_for_assignments(
@@ -1719,24 +1827,9 @@ class AssignmentService:
             logger.info("PROCESO DE ASIGNACION COMPLETADO")
             logger.info("=" * 80)
 
-            if notifications_allowed_today:
-                try:
-                    logger.info("Generando y enviando informes por correo...")
-                    report_result = self.generate_and_send_reports()
-                    results["report_sent"] = report_result
-                except Exception as report_error:
-                    logger.error(f"Error generando/enviando informes: {report_error}")
-                    results["report_sent"] = False
-                    results["report_error"] = str(report_error)
-            else:
-                logger.info(
-                    "Envio de informes omitido por calendario de notificaciones. "
-                    "Hoy=%s dias_permitidos=%s",
-                    notification_local_day,
-                    settings.auto_notification_weekdays,
-                )
-                results["report_sent"] = False
-                results["report_skipped_by_schedule"] = True
+            self._maybe_send_reports(
+                results, notifications_allowed_today, notification_local_day
+            )
 
         except Exception as e:
             logger.error(f"Error en el proceso de asignacion: {e}")
@@ -1750,28 +1843,92 @@ class AssignmentService:
                 3,
             )
 
-            if notifications_allowed_today:
-                try:
-                    completion_sent = self.send_completion_notification(results)
-                    results["completion_notification_sent"] = completion_sent
-                except Exception as notify_error:
-                    logger.error(
-                        "Error enviando notificacion de finalizacion: %s",
-                        notify_error,
-                    )
-                    results["completion_notification_sent"] = False
-                    results["completion_notification_error"] = str(notify_error)
-            else:
-                logger.info(
-                    "Notificacion de finalizacion omitida por calendario. "
-                    "Hoy=%s dias_permitidos=%s",
-                    notification_local_day,
-                    settings.auto_notification_weekdays,
-                )
-                results["completion_notification_sent"] = False
-                results["completion_notification_skipped_by_schedule"] = True
+            self._maybe_send_completion_notification(
+                results, notifications_allowed_today, notification_local_day
+            )
 
         return results
+
+    def _run_twist_assignments(self, results: Dict[str, Any]) -> None:
+        """
+        Ejecuta asignacion Twist 1.0 y 2.0 en tablas dedicadas.
+
+        Productos Twist 1.0 y Twist 2.0 -> tablas propias dedicadas
+        (contract_advisors_twist / contract_advisors_twist2). Mismas
+        reglas que la imagen (franja 31-60 impar -> Cobyser; 61-240 40/60).
+        Aislado del flujo Phone: un fallo aqui NO aborta la corrida Phone
+        ya persistida. Import local para evitar dependencia circular.
+        """
+        try:
+            from app.services.twist_assignment_service import TwistAssignmentService
+
+            twist_service = TwistAssignmentService(
+                postgres_session=self.postgres_session,
+                contract_service=self.contract_service,
+            )
+            results["twist1_stats"] = twist_service.run_twist1()
+            results["twist2_stats"] = twist_service.run_twist2()
+        except Exception as twist_error:
+            logger.error("Error en asignacion Twist (PHONE no afectado): %s", twist_error)
+            results["twist_error"] = str(twist_error)
+
+    def _maybe_send_reports(
+        self,
+        results: Dict[str, Any],
+        notifications_allowed_today: bool,
+        notification_local_day: str,
+    ) -> None:
+        """
+        Genera y envia informes si el calendario lo permite; muta results.
+        """
+        if notifications_allowed_today:
+            try:
+                logger.info("Generando y enviando informes por correo...")
+                report_result = self.generate_and_send_reports()
+                results["report_sent"] = report_result
+            except Exception as report_error:
+                logger.error(f"Error generando/enviando informes: {report_error}")
+                results["report_sent"] = False
+                results["report_error"] = str(report_error)
+        else:
+            logger.info(
+                "Envio de informes omitido por calendario de notificaciones. "
+                "Hoy=%s dias_permitidos=%s",
+                notification_local_day,
+                settings.auto_notification_weekday_list,
+            )
+            results["report_sent"] = False
+            results["report_skipped_by_schedule"] = True
+
+    def _maybe_send_completion_notification(
+        self,
+        results: Dict[str, Any],
+        notifications_allowed_today: bool,
+        notification_local_day: str,
+    ) -> None:
+        """
+        Envia la notificacion de finalizacion si el calendario lo permite; muta results.
+        """
+        if notifications_allowed_today:
+            try:
+                completion_sent = self.send_completion_notification(results)
+                results["completion_notification_sent"] = completion_sent
+            except Exception as notify_error:
+                logger.error(
+                    "Error enviando notificacion de finalizacion: %s",
+                    notify_error,
+                )
+                results["completion_notification_sent"] = False
+                results["completion_notification_error"] = str(notify_error)
+        else:
+            logger.info(
+                "Notificacion de finalizacion omitida por calendario. "
+                "Hoy=%s dias_permitidos=%s",
+                notification_local_day,
+                settings.auto_notification_weekday_list,
+            )
+            results["completion_notification_sent"] = False
+            results["completion_notification_skipped_by_schedule"] = True
 
     def _notifications_allowed_today(self) -> Tuple[bool, str]:
         """
@@ -1788,7 +1945,7 @@ class AssignmentService:
 
         local_now = datetime.now(timezone)
         weekday = local_now.weekday()
-        allowed_weekdays = settings.auto_notification_weekdays
+        allowed_weekdays = settings.auto_notification_weekday_list
         allowed_today = weekday in allowed_weekdays
 
         logger.info(
@@ -1807,7 +1964,7 @@ class AssignmentService:
         """
         from app.services.email_service import email_service
 
-        recipients = list(settings.notification_recipients)
+        recipients = list(settings.notification_recipient_list)
         mandatory_recipient = "mdeulofeuth@alocredit.co"
         if mandatory_recipient not in recipients:
             recipients.append(mandatory_recipient)
@@ -1823,7 +1980,6 @@ class AssignmentService:
         balance_stats = results.get("balance_stats", {}) or {}
         estado_stats = results.get("estado_actual_update_stats", {}) or {}
         fixed_counts = results.get("fixed_contracts_count", {}) or {}
-        fixed_insert_stats = results.get("fixed_insert_stats", {}) or {}
         runtime_cfg = results.get("runtime_config", {}) or {}
         blacklist_stats = results.get("blacklist_enforcement_stats", {}) or {}
         contracts_to_assign_count = len(results.get("contracts_to_assign", []) or [])
@@ -1982,9 +2138,9 @@ class AssignmentService:
                 if total_contracts > 0
                 else 0.0
             )
-            cobyser_recipients = settings.cobyser_notification_recipients
-            serlefin_recipients = settings.serlefin_notification_recipients
-            both_reports_recipients = settings.notification_recipients
+            cobyser_recipients = settings.cobyser_notification_recipient_list
+            serlefin_recipients = settings.serlefin_notification_recipient_list
+            both_reports_recipients = settings.notification_recipient_list
 
             if not any([cobyser_recipients, serlefin_recipients, both_reports_recipients]):
                 logger.error(
@@ -2035,22 +2191,13 @@ class AssignmentService:
 
             if cobyser_recipients:
                 cobyser_subject = "Asignacion de cartera - Cobyser (notificacion + base)"
-                cobyser_body = f"""
-                <html>
-                <body style="font-family:Arial,sans-serif">
-                  <h2>Asignacion ejecutada - Cobyser</h2>
-                  <p><strong>Fecha:</strong> {generated_at}</p>
-                  <p>Proceso de asignacion ejecutado correctamente para Cobyser.</p>
-                  <p><strong>Contratos asignados a Cobyser:</strong> {cobyser_total_contracts}</p>
-                  <p><strong>Participacion Cobyser:</strong> {cobyser_percent}%</p>
-                  <p>{cobyser_attachment_text}</p>
-                  <p>Este correo muestra solo la informacion de Cobyser.</p>
-                  <hr />
-                  {metrics_html_cobyser}
-                  <p>Correo automatico del sistema de asignacion.</p>
-                </body>
-                </html>
-                """
+                cobyser_body = self._build_cobyser_report_body(
+                    generated_at,
+                    cobyser_total_contracts,
+                    cobyser_percent,
+                    cobyser_attachment_text,
+                    metrics_html_cobyser,
+                )
                 _send_group(
                     recipients=cobyser_recipients,
                     subject=cobyser_subject,
@@ -2061,22 +2208,12 @@ class AssignmentService:
 
             if serlefin_recipients:
                 serlefin_subject = "Asignacion de cartera - Serlefin (solo notificacion)"
-                serlefin_body = f"""
-                <html>
-                <body style="font-family:Arial,sans-serif">
-                  <h2>Asignacion ejecutada - Serlefin</h2>
-                  <p><strong>Fecha:</strong> {generated_at}</p>
-                  <p>Proceso de asignacion ejecutado correctamente para Serlefin.</p>
-                  <p><strong>Contratos asignados a Serlefin:</strong> {serlefin_total_contracts}</p>
-                  <p><strong>Participacion Serlefin:</strong> {serlefin_percent}%</p>
-                  <p>Este correo se envia sin archivo adjunto, segun la regla operativa.</p>
-                  <p>Este correo muestra solo la informacion de Serlefin.</p>
-                  <hr />
-                  {metrics_html_serlefin}
-                  <p>Correo automatico del sistema de asignacion.</p>
-                </body>
-                </html>
-                """
+                serlefin_body = self._build_serlefin_report_body(
+                    generated_at,
+                    serlefin_total_contracts,
+                    serlefin_percent,
+                    metrics_html_serlefin,
+                )
                 _send_group(
                     recipients=serlefin_recipients,
                     subject=serlefin_subject,
@@ -2087,21 +2224,13 @@ class AssignmentService:
 
             if both_reports_recipients:
                 both_subject = "Asignacion de cartera - Notificacion con ambas bases"
-                both_body = f"""
-                <html>
-                <body style="font-family:Arial,sans-serif">
-                  <h2>Asignacion ejecutada - Notificacion general</h2>
-                  <p><strong>Fecha:</strong> {generated_at}</p>
-                  <p>Proceso de asignacion ejecutado correctamente.</p>
-                  <p><strong>Contratos asignados Serlefin:</strong> {serlefin_total_contracts}</p>
-                  <p><strong>Contratos asignados Cobyser:</strong> {cobyser_total_contracts}</p>
-                  <p>{both_attachments_text}</p>
-                  <hr />
-                  {metrics_html_general}
-                  <p>Correo automatico del sistema de asignacion.</p>
-                </body>
-                </html>
-                """
+                both_body = self._build_both_report_body(
+                    generated_at,
+                    serlefin_total_contracts,
+                    cobyser_total_contracts,
+                    both_attachments_text,
+                    metrics_html_general,
+                )
                 both_attachments: List[str] = []
                 if file_45:
                     both_attachments.append(file_45)
@@ -2137,6 +2266,82 @@ class AssignmentService:
         finally:
             # self._cleanup_generated_report_files(generated_report_files)
             pass
+
+    @staticmethod
+    def _build_cobyser_report_body(
+        generated_at: str,
+        cobyser_total_contracts: int,
+        cobyser_percent: float,
+        cobyser_attachment_text: str,
+        metrics_html_cobyser: str,
+    ) -> str:
+        """Construye el cuerpo HTML del correo Cobyser."""
+        return f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Cobyser</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente para Cobyser.</p>
+                  <p><strong>Contratos asignados a Cobyser:</strong> {cobyser_total_contracts}</p>
+                  <p><strong>Participacion Cobyser:</strong> {cobyser_percent}%</p>
+                  <p>{cobyser_attachment_text}</p>
+                  <p>Este correo muestra solo la informacion de Cobyser.</p>
+                  <hr />
+                  {metrics_html_cobyser}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
+
+    @staticmethod
+    def _build_serlefin_report_body(
+        generated_at: str,
+        serlefin_total_contracts: int,
+        serlefin_percent: float,
+        metrics_html_serlefin: str,
+    ) -> str:
+        """Construye el cuerpo HTML del correo Serlefin."""
+        return f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Serlefin</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente para Serlefin.</p>
+                  <p><strong>Contratos asignados a Serlefin:</strong> {serlefin_total_contracts}</p>
+                  <p><strong>Participacion Serlefin:</strong> {serlefin_percent}%</p>
+                  <p>Este correo se envia sin archivo adjunto, segun la regla operativa.</p>
+                  <p>Este correo muestra solo la informacion de Serlefin.</p>
+                  <hr />
+                  {metrics_html_serlefin}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
+
+    @staticmethod
+    def _build_both_report_body(
+        generated_at: str,
+        serlefin_total_contracts: int,
+        cobyser_total_contracts: int,
+        both_attachments_text: str,
+        metrics_html_general: str,
+    ) -> str:
+        """Construye el cuerpo HTML del correo general con ambas bases."""
+        return f"""
+                <html>
+                <body style="font-family:Arial,sans-serif">
+                  <h2>Asignacion ejecutada - Notificacion general</h2>
+                  <p><strong>Fecha:</strong> {generated_at}</p>
+                  <p>Proceso de asignacion ejecutado correctamente.</p>
+                  <p><strong>Contratos asignados Serlefin:</strong> {serlefin_total_contracts}</p>
+                  <p><strong>Contratos asignados Cobyser:</strong> {cobyser_total_contracts}</p>
+                  <p>{both_attachments_text}</p>
+                  <hr />
+                  {metrics_html_general}
+                  <p>Correo automatico del sistema de asignacion.</p>
+                </body>
+                </html>
+                """
 
     @staticmethod
     def _cleanup_generated_report_files(file_paths: List[str]) -> None:

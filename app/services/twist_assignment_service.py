@@ -50,21 +50,18 @@ class TwistAssignmentService:
             return 0.6
 
     @staticmethod
-    def _decide_assignments(contracts: List[dict], serlefin_ratio: float):
-        """
-        Aplica las reglas de la imagen. Devuelve [(contract, user_id, tipo)].
-        - 31-60 + cedula impar -> Cobyser (45), 'CEDULAS_IMPAR'.
-        - 61-240 -> 40/60 por bucket, 'ASIGNACION'.
-        - resto (1-30, 31-60 par) -> no se asigna.
-        """
+    def _franja_decisions(contracts: List[dict]):
+        """Franja 31-60 + cedula impar -> Cobyser (45), 'CEDULAS_IMPAR'."""
         decisions = []
+        for contract in contracts:
+            days = int(contract.get("days_overdue") or 0)
+            if 31 <= days <= 60 and is_cedula_impar(contract.get("cedula")):
+                decisions.append((contract, COBYSER_USER, "CEDULAS_IMPAR"))
+        return decisions
 
-        if settings.FRANJA_COBYSER_ENABLED:
-            for contract in contracts:
-                days = int(contract.get("days_overdue") or 0)
-                if 31 <= days <= 60 and is_cedula_impar(contract.get("cedula")):
-                    decisions.append((contract, COBYSER_USER, "CEDULAS_IMPAR"))
-
+    @staticmethod
+    def _group_main_by_bucket(contracts: List[dict]) -> Dict[str, List[dict]]:
+        """Agrupa los contratos 61-240 por bucket DPD de asignacion."""
         main = [
             contract
             for contract in contracts
@@ -75,7 +72,12 @@ class TwistAssignmentService:
             dpd_range = get_assignment_dpd_range(int(contract["days_overdue"]))
             if dpd_range:
                 by_bucket.setdefault(dpd_range, []).append(contract)
+        return by_bucket
 
+    @staticmethod
+    def _bucket_decisions(by_bucket: Dict[str, List[dict]], serlefin_ratio: float):
+        """61-240 -> 40/60 por bucket, 'ASIGNACION'."""
+        decisions = []
         for dpd_range in reversed(ASSIGNMENT_DPD_ORDER):
             bucket = by_bucket.get(dpd_range, [])
             if not bucket:
@@ -86,6 +88,25 @@ class TwistAssignmentService:
             )
             for contract, user_id in zip(bucket, sequence):
                 decisions.append((contract, user_id, "ASIGNACION"))
+        return decisions
+
+    @staticmethod
+    def _decide_assignments(contracts: List[dict], serlefin_ratio: float):
+        """
+        Aplica las reglas de la imagen. Devuelve [(contract, user_id, tipo)].
+        - 31-60 + cedula impar -> Cobyser (45), 'CEDULAS_IMPAR'.
+        - 61-240 -> 40/60 por bucket, 'ASIGNACION'.
+        - resto (1-30, 31-60 par) -> no se asigna.
+        """
+        decisions = []
+
+        if settings.FRANJA_COBYSER_ENABLED:
+            decisions.extend(TwistAssignmentService._franja_decisions(contracts))
+
+        by_bucket = TwistAssignmentService._group_main_by_bucket(contracts)
+        decisions.extend(
+            TwistAssignmentService._bucket_decisions(by_bucket, serlefin_ratio)
+        )
 
         return decisions
 

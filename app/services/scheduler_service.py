@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 REPORT_CLEANUP_INTERVAL_HOURS = 24
 REPORT_MAX_AGE_HOURS = 24
+DATETIME_FORMAT_WITH_TZ = "%Y-%m-%d %H:%M:%S %Z"
 
 
 class AutoAssignmentScheduler:
@@ -63,7 +64,7 @@ class AutoAssignmentScheduler:
                 settings.AUTO_ASSIGNMENT_HOUR,
                 settings.AUTO_ASSIGNMENT_MINUTE,
                 settings.AUTO_ASSIGNMENT_TIMEZONE,
-                settings.auto_assignment_weekdays,
+                settings.auto_assignment_weekday_list,
             )
         else:
             logger.info("Scheduler de asignacion deshabilitado por configuracion")
@@ -118,7 +119,7 @@ class AutoAssignmentScheduler:
 
             logger.info(
                 "Proxima asignacion automatica programada para %s",
-                next_run.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                next_run.strftime(DATETIME_FORMAT_WITH_TZ),
             )
 
             try:
@@ -133,7 +134,7 @@ class AutoAssignmentScheduler:
             await self._run_once()
 
     def _next_business_run(self, now: datetime) -> datetime:
-        weekdays = settings.auto_assignment_weekdays
+        weekdays = settings.auto_assignment_weekday_list
 
         candidate = now.replace(
             hour=settings.AUTO_ASSIGNMENT_HOUR,
@@ -191,7 +192,7 @@ class AutoAssignmentScheduler:
 
             logger.info(
                 "Proximo informe de finalizacion de ciclo programado para %s",
-                next_run.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                next_run.strftime(DATETIME_FORMAT_WITH_TZ),
             )
 
             try:
@@ -279,7 +280,7 @@ class AutoAssignmentScheduler:
 
             logger.info(
                 "Proximo cierre masivo + reasignacion de fin de mes programado para %s",
-                next_run.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                next_run.strftime(DATETIME_FORMAT_WITH_TZ),
             )
 
             try:

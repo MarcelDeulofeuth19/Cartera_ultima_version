@@ -28,7 +28,7 @@ class EmailService:
 
         # Destinatarios de excepcion: Serlefin tambien se envia con Excel.
         self.serlefin_attachment_exception_recipients = set(
-            settings.serlefin_attachment_exception_recipients
+            settings.serlefin_attachment_exception_recipient_list
         )
 
     def _recipient_requires_serlefin_attachment(self, recipient: str) -> bool:

@@ -11,6 +11,19 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Constantes para literales duplicados (etiquetas de columnas y formatos)
+ADVISOR_ID = 'Advisor ID'
+CASA_COBRANZA = 'Casa Cobranza'
+CONTRACT_ID = 'Contract ID'
+MANAGEMENT_DATE = 'Management Date'
+PROMISE_DATE = 'Promise Date'
+DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+CONTRATOS_FIJOS = 'Contratos Fijos'
+TOTAL_CONTRATOS_FIJOS = 'Total Contratos Fijos'
+ACUERDO_DE_PAGO = 'Acuerdo de Pago'
+PAGO_TOTAL = 'Pago Total'
+TOTAL_CONTRATOS = 'Total Contratos'
+
 
 class ReportService:
     """
@@ -54,7 +67,7 @@ class ReportService:
             file_45 = os.path.join(self.reports_dir, settings.REPORT_FILE_USER_45)
             with open(file_45, 'w', encoding='utf-8') as f:
                 f.write(f"Asignación de Contratos - Usuario 45 (COBYSER)\n")
-                f.write(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Fecha: {datetime.now().strftime(DATETIME_FORMAT)}\n")
                 f.write(f"Total de contratos: {len(assignments.get(45, []))}\n")
                 f.write("=" * 70 + "\n")
                 f.write(f"{'#':<6} {'Contrato ID':<15} {'Días Atraso':<15}\n")
@@ -71,7 +84,7 @@ class ReportService:
             file_81 = os.path.join(self.reports_dir, settings.REPORT_FILE_USER_81)
             with open(file_81, 'w', encoding='utf-8') as f:
                 f.write(f"Asignación de Contratos - Usuario 81 (SERLEFIN)\n")
-                f.write(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Fecha: {datetime.now().strftime(DATETIME_FORMAT)}\n")
                 f.write(f"Total de contratos: {len(assignments.get(81, []))}\n")
                 f.write("=" * 70 + "\n")
                 f.write(f"{'#':<6} {'Contrato ID':<15} {'Días Atraso':<15}\n")
@@ -90,8 +103,88 @@ class ReportService:
             logger.error(f"✗ Error al generar archivos TXT: {e}")
             raise
     
+    def _collect_fixed_management_data(
+        self, managements, today, validity_datetime, hoy_naive
+    ) -> List[dict]:
+        """Construye la lista de filas válidas a partir de los managements."""
+        data = []
+        for mgmt in managements:
+            is_valid = False
+
+            # FILTRO: acuerdo_de_pago - solo si promise_date >= hoy
+            if mgmt.effect == settings.EFFECT_ACUERDO_PAGO:
+                if mgmt.promise_date and mgmt.promise_date >= today:
+                    is_valid = True
+
+            # FILTRO: pago_total - solo si management_date en rango [hace 30 días, hoy]
+            elif mgmt.effect == settings.EFFECT_PAGO_TOTAL:
+                if mgmt.management_date:
+                    mgmt_date = mgmt.management_date
+                    if mgmt_date.tzinfo is not None:
+                        mgmt_date = mgmt_date.replace(tzinfo=None)
+
+                    if validity_datetime <= mgmt_date <= hoy_naive:
+                        is_valid = True
+
+            # Solo agregar si es válido
+            if is_valid:
+                # Determinar casa de cobranza
+                casa = 'COBYSER' if mgmt.user_id in settings.COBYSER_USERS else 'SERLEFIN'
+
+                # Formatear fechas
+                mgmt_date = mgmt.management_date.strftime(DATETIME_FORMAT) if mgmt.management_date else 'N/A'
+                promise_date = mgmt.promise_date.strftime('%Y-%m-%d') if mgmt.promise_date else 'N/A'
+
+                data.append({
+                    CONTRACT_ID: mgmt.contract_id,
+                    ADVISOR_ID: mgmt.user_id,
+                    CASA_COBRANZA: casa,
+                    'Effect': mgmt.effect,
+                    MANAGEMENT_DATE: mgmt_date,
+                    PROMISE_DATE: promise_date if mgmt.effect == settings.EFFECT_ACUERDO_PAGO else 'N/A'
+                })
+        return data
+
+    def _build_fixed_summary_data(self, fixed_contracts, data):
+        """Calcula el resumen por casa de cobranza para el Excel de contratos fijos."""
+        summary_data = {
+            CASA_COBRANZA: [],
+            'Usuario': [],
+            TOTAL_CONTRATOS_FIJOS: [],
+            ACUERDO_DE_PAGO: [],
+            PAGO_TOTAL: []
+        }
+
+        # Resumen para COBYSER (usuario principal 45)
+        cobyser_total = len(fixed_contracts.get(45, []))
+        cobyser_acuerdo = len([d for d in data if d.get(ADVISOR_ID) in settings.COBYSER_USERS and d.get('Effect') == settings.EFFECT_ACUERDO_PAGO])
+        cobyser_pago = len([d for d in data if d.get(ADVISOR_ID) in settings.COBYSER_USERS and d.get('Effect') == settings.EFFECT_PAGO_TOTAL])
+
+        summary_data[CASA_COBRANZA].append('COBYSER')
+        summary_data['Usuario'].append('45 (principal)')
+        summary_data[TOTAL_CONTRATOS_FIJOS].append(cobyser_total)
+        summary_data[ACUERDO_DE_PAGO].append(cobyser_acuerdo)
+        summary_data[PAGO_TOTAL].append(cobyser_pago)
+
+        # Resumen para SERLEFIN (usuario principal 81)
+        serlefin_total = len(fixed_contracts.get(81, []))
+        serlefin_acuerdo = len([d for d in data if d.get(ADVISOR_ID) in settings.SERLEFIN_USERS and d.get('Effect') == settings.EFFECT_ACUERDO_PAGO])
+        serlefin_pago = len([d for d in data if d.get(ADVISOR_ID) in settings.SERLEFIN_USERS and d.get('Effect') == settings.EFFECT_PAGO_TOTAL])
+
+        summary_data[CASA_COBRANZA].append('SERLEFIN')
+        summary_data['Usuario'].append('81 (principal)')
+        summary_data[TOTAL_CONTRATOS_FIJOS].append(serlefin_total)
+        summary_data[ACUERDO_DE_PAGO].append(serlefin_acuerdo)
+        summary_data[PAGO_TOTAL].append(serlefin_pago)
+
+        return (
+            summary_data,
+            cobyser_total, cobyser_acuerdo, cobyser_pago,
+            serlefin_total, serlefin_acuerdo, serlefin_pago
+        )
+
     def generate_fixed_contracts_excel(
-        self, 
+        self,
         fixed_contracts: Dict[int, List[int]],
         postgres_session
     ) -> str:
@@ -138,7 +231,7 @@ class ReportService:
             if not all_contract_ids:
                 logger.warning("No hay contratos fijos para generar reporte")
                 # DataFrame vacío con columnas
-                df = pd.DataFrame(columns=['Contract ID', 'Advisor ID', 'Casa Cobranza', 'Effect', 'Management Date', 'Promise Date'])
+                df = pd.DataFrame(columns=[CONTRACT_ID, ADVISOR_ID, CASA_COBRANZA, 'Effect', MANAGEMENT_DATE, PROMISE_DATE])
             else:
                 # Consultar detalles de managements (AMBOS effects)
                 managements = postgres_session.query(Management).filter(
@@ -150,89 +243,33 @@ class ReportService:
                 ).all()
                 
                 logger.info(f"Registros encontrados en managements: {len(managements)}")
-                
+
                 # Aplicar los mismos filtros que get_fixed_contracts
-                for mgmt in managements:
-                    is_valid = False
-                    
-                    # FILTRO: acuerdo_de_pago - solo si promise_date >= hoy
-                    if mgmt.effect == settings.EFFECT_ACUERDO_PAGO:
-                        if mgmt.promise_date and mgmt.promise_date >= today:
-                            is_valid = True
-                    
-                    # FILTRO: pago_total - solo si management_date en rango [hace 30 días, hoy]
-                    elif mgmt.effect == settings.EFFECT_PAGO_TOTAL:
-                        if mgmt.management_date:
-                            mgmt_date = mgmt.management_date
-                            if mgmt_date.tzinfo is not None:
-                                mgmt_date = mgmt_date.replace(tzinfo=None)
-                            
-                            if validity_datetime <= mgmt_date <= hoy_naive:
-                                is_valid = True
-                    
-                    # Solo agregar si es válido
-                    if is_valid:
-                        # Determinar casa de cobranza
-                        casa = 'COBYSER' if mgmt.user_id in settings.COBYSER_USERS else 'SERLEFIN'
-                        
-                        # Formatear fechas
-                        mgmt_date = mgmt.management_date.strftime('%Y-%m-%d %H:%M:%S') if mgmt.management_date else 'N/A'
-                        promise_date = mgmt.promise_date.strftime('%Y-%m-%d') if mgmt.promise_date else 'N/A'
-                        
-                        data.append({
-                            'Contract ID': mgmt.contract_id,
-                            'Advisor ID': mgmt.user_id,
-                            'Casa Cobranza': casa,
-                            'Effect': mgmt.effect,
-                            'Management Date': mgmt_date,
-                            'Promise Date': promise_date if mgmt.effect == settings.EFFECT_ACUERDO_PAGO else 'N/A'
-                        })
-                
+                data = self._collect_fixed_management_data(
+                    managements, today, validity_datetime, hoy_naive
+                )
+
                 # Crear DataFrame
                 if data:
                     df = pd.DataFrame(data)
-                    df = df.sort_values(['Casa Cobranza', 'Advisor ID', 'Contract ID'])
+                    df = df.sort_values([CASA_COBRANZA, ADVISOR_ID, CONTRACT_ID])
                 else:
-                    df = pd.DataFrame(columns=['Contract ID', 'Advisor ID', 'Casa Cobranza', 'Effect', 'Management Date', 'Promise Date'])
+                    df = pd.DataFrame(columns=[CONTRACT_ID, ADVISOR_ID, CASA_COBRANZA, 'Effect', MANAGEMENT_DATE, PROMISE_DATE])
             
             # Generar archivo Excel
             excel_path = os.path.join(self.reports_dir, settings.REPORT_EXCEL_FIXED)
             
             with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
                 # Hoja principal con todos los datos
-                df.to_excel(writer, sheet_name='Contratos Fijos', index=False)
-                
+                df.to_excel(writer, sheet_name=CONTRATOS_FIJOS, index=False)
+
                 # Hoja resumen por usuario
-                summary_data = {
-                    'Casa Cobranza': [],
-                    'Usuario': [],
-                    'Total Contratos Fijos': [],
-                    'Acuerdo de Pago': [],
-                    'Pago Total': []
-                }
-                
-                # Resumen para COBYSER (usuario principal 45)
-                cobyser_total = len(fixed_contracts.get(45, []))
-                cobyser_acuerdo = len([d for d in data if d.get('Advisor ID') in settings.COBYSER_USERS and d.get('Effect') == settings.EFFECT_ACUERDO_PAGO])
-                cobyser_pago = len([d for d in data if d.get('Advisor ID') in settings.COBYSER_USERS and d.get('Effect') == settings.EFFECT_PAGO_TOTAL])
-                
-                summary_data['Casa Cobranza'].append('COBYSER')
-                summary_data['Usuario'].append('45 (principal)')
-                summary_data['Total Contratos Fijos'].append(cobyser_total)
-                summary_data['Acuerdo de Pago'].append(cobyser_acuerdo)
-                summary_data['Pago Total'].append(cobyser_pago)
-                
-                # Resumen para SERLEFIN (usuario principal 81)
-                serlefin_total = len(fixed_contracts.get(81, []))
-                serlefin_acuerdo = len([d for d in data if d.get('Advisor ID') in settings.SERLEFIN_USERS and d.get('Effect') == settings.EFFECT_ACUERDO_PAGO])
-                serlefin_pago = len([d for d in data if d.get('Advisor ID') in settings.SERLEFIN_USERS and d.get('Effect') == settings.EFFECT_PAGO_TOTAL])
-                
-                summary_data['Casa Cobranza'].append('SERLEFIN')
-                summary_data['Usuario'].append('81 (principal)')
-                summary_data['Total Contratos Fijos'].append(serlefin_total)
-                summary_data['Acuerdo de Pago'].append(serlefin_acuerdo)
-                summary_data['Pago Total'].append(serlefin_pago)
-                
+                (
+                    summary_data,
+                    cobyser_total, cobyser_acuerdo, cobyser_pago,
+                    serlefin_total, serlefin_acuerdo, serlefin_pago
+                ) = self._build_fixed_summary_data(fixed_contracts, data)
+
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Resumen', index=False)
                 
@@ -240,7 +277,7 @@ class ReportService:
                 metadata = pd.DataFrame({
                     'Campo': ['Fecha de Generación', 'Effects Incluidos', 'Total General', 'COBYSER Total', 'SERLEFIN Total'],
                     'Valor': [
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        datetime.now().strftime(DATETIME_FORMAT),
                         f"{settings.EFFECT_ACUERDO_PAGO}, {settings.EFFECT_PAGO_TOTAL}",
                         len(data),
                         cobyser_total,
@@ -344,7 +381,7 @@ class ReportService:
                 
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(f"División de Contratos - Usuario {user_id}\n")
-                    f.write(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Fecha: {datetime.now().strftime(DATETIME_FORMAT)}\n")
                     f.write(f"Total de contratos: {len(assignments.get(user_id, []))}\n")
                     f.write(f"Rango: {settings.DIVISION_MIN_DAYS} - {settings.DIVISION_MAX_DAYS} días de atraso\n")
                     f.write("=" * 70 + "\n")
@@ -364,8 +401,79 @@ class ReportService:
             logger.error(f"✗ Error al generar archivos TXT de división: {e}")
             raise
     
+    def _collect_division_data(
+        self, assignments, fixed_contracts, contracts_days_map, postgres_session
+    ) -> List[dict]:
+        """Construye las filas de detalle de la división de contratos."""
+        from app.database.models import Management
+        from sqlalchemy import or_
+
+        data = []
+        for user_id in settings.DIVISION_USER_IDS:
+            user_contracts = assignments.get(user_id, [])
+
+            for contract_id in user_contracts:
+                # Buscar si es contrato fijo
+                is_fixed = contract_id in fixed_contracts.get(user_id, [])
+                days_overdue = contracts_days_map.get(contract_id, 'N/A')
+
+                # Buscar detalles de managements si es fijo
+                effect = None
+                promise_date = None
+                management_date = None
+
+                if is_fixed:
+                    mgmt = postgres_session.query(Management).filter(
+                        Management.contract_id == contract_id,
+                        Management.user_id == user_id,
+                        or_(
+                            Management.effect == settings.EFFECT_ACUERDO_PAGO,
+                            Management.effect == settings.EFFECT_PAGO_TOTAL
+                        )
+                    ).first()
+
+                    if mgmt:
+                        effect = mgmt.effect
+                        promise_date = mgmt.promise_date
+                        management_date = mgmt.management_date
+
+                data.append({
+                    'Usuario': user_id,
+                    'Contrato ID': contract_id,
+                    'Días Atraso': days_overdue,
+                    'Es Fijo': 'Sí' if is_fixed else 'No',
+                    'Effect': effect or 'N/A',
+                    PROMISE_DATE: promise_date.strftime('%Y-%m-%d') if promise_date else 'N/A',
+                    MANAGEMENT_DATE: management_date.strftime(DATETIME_FORMAT) if management_date else 'N/A'
+                })
+        return data
+
+    def _build_division_summary_data(self, assignments, fixed_contracts):
+        """Calcula el resumen por usuario para el Excel de división."""
+        summary_data = {
+            'Usuario': [],
+            TOTAL_CONTRATOS: [],
+            CONTRATOS_FIJOS: [],
+            'Contratos Nuevos': [],
+            '% Fijos': []
+        }
+
+        for user_id in settings.DIVISION_USER_IDS:
+            user_total = len(assignments.get(user_id, []))
+            user_fixed = len(fixed_contracts.get(user_id, []))
+            user_new = user_total - user_fixed
+            pct_fixed = (user_fixed / user_total * 100) if user_total > 0 else 0
+
+            summary_data['Usuario'].append(user_id)
+            summary_data[TOTAL_CONTRATOS].append(user_total)
+            summary_data[CONTRATOS_FIJOS].append(user_fixed)
+            summary_data['Contratos Nuevos'].append(user_new)
+            summary_data['% Fijos'].append(f"{pct_fixed:.1f}%")
+
+        return summary_data
+
     def generate_division_excel(
-        self, 
+        self,
         assignments: Dict[int, List[int]],
         fixed_contracts: Dict[int, List[int]],
         contracts_days_map: Dict[int, int],
@@ -384,82 +492,25 @@ class ReportService:
         Returns:
             Ruta del archivo Excel generado
         """
-        from app.database.models import Management
-        from sqlalchemy import or_
-        
         logger.info("Generando Excel de división de contratos...")
         
         excel_path = os.path.join(self.reports_dir, settings.REPORT_EXCEL_DIVISION)
         
         try:
             # Preparar datos de todos los contratos asignados
-            data = []
-            
-            for user_id in settings.DIVISION_USER_IDS:
-                user_contracts = assignments.get(user_id, [])
-                
-                for contract_id in user_contracts:
-                    # Buscar si es contrato fijo
-                    is_fixed = contract_id in fixed_contracts.get(user_id, [])
-                    days_overdue = contracts_days_map.get(contract_id, 'N/A')
-                    
-                    # Buscar detalles de managements si es fijo
-                    effect = None
-                    promise_date = None
-                    management_date = None
-                    
-                    if is_fixed:
-                        mgmt = postgres_session.query(Management).filter(
-                            Management.contract_id == contract_id,
-                            Management.user_id == user_id,
-                            or_(
-                                Management.effect == settings.EFFECT_ACUERDO_PAGO,
-                                Management.effect == settings.EFFECT_PAGO_TOTAL
-                            )
-                        ).first()
-                        
-                        if mgmt:
-                            effect = mgmt.effect
-                            promise_date = mgmt.promise_date
-                            management_date = mgmt.management_date
-                    
-                    data.append({
-                        'Usuario': user_id,
-                        'Contrato ID': contract_id,
-                        'Días Atraso': days_overdue,
-                        'Es Fijo': 'Sí' if is_fixed else 'No',
-                        'Effect': effect or 'N/A',
-                        'Promise Date': promise_date.strftime('%Y-%m-%d') if promise_date else 'N/A',
-                        'Management Date': management_date.strftime('%Y-%m-%d %H:%M:%S') if management_date else 'N/A'
-                    })
-            
+            data = self._collect_division_data(
+                assignments, fixed_contracts, contracts_days_map, postgres_session
+            )
+
             df = pd.DataFrame(data)
-            
+
             with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
                 # Hoja principal con todos los datos
                 df.to_excel(writer, sheet_name='División Contratos', index=False)
-                
+
                 # Hoja resumen por usuario
-                summary_data = {
-                    'Usuario': [],
-                    'Total Contratos': [],
-                    'Contratos Fijos': [],
-                    'Contratos Nuevos': [],
-                    '% Fijos': []
-                }
-                
-                for user_id in settings.DIVISION_USER_IDS:
-                    user_total = len(assignments.get(user_id, []))
-                    user_fixed = len(fixed_contracts.get(user_id, []))
-                    user_new = user_total - user_fixed
-                    pct_fixed = (user_fixed / user_total * 100) if user_total > 0 else 0
-                    
-                    summary_data['Usuario'].append(user_id)
-                    summary_data['Total Contratos'].append(user_total)
-                    summary_data['Contratos Fijos'].append(user_fixed)
-                    summary_data['Contratos Nuevos'].append(user_new)
-                    summary_data['% Fijos'].append(f"{pct_fixed:.1f}%")
-                
+                summary_data = self._build_division_summary_data(assignments, fixed_contracts)
+
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Resumen por Usuario', index=False)
                 
@@ -470,12 +521,12 @@ class ReportService:
                         'Effects Incluidos',
                         'Rango de Días',
                         'Total Usuarios',
-                        'Total Contratos',
-                        'Total Contratos Fijos',
+                        TOTAL_CONTRATOS,
+                        TOTAL_CONTRATOS_FIJOS,
                         'Total Contratos Nuevos'
                     ],
                     'Valor': [
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        datetime.now().strftime(DATETIME_FORMAT),
                         f"{settings.EFFECT_ACUERDO_PAGO}, {settings.EFFECT_PAGO_TOTAL}",
                         f"{settings.DIVISION_MIN_DAYS} - {settings.DIVISION_MAX_DAYS} días",
                         len(settings.DIVISION_USER_IDS),

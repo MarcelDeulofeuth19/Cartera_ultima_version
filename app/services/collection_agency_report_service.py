@@ -93,24 +93,12 @@ class CollectionAgencyReportService:
         finally:
             conn_ind.close()
     
-    def _fetch_missing_from_mysql(
-        self, missing_ids: List[int], target_columns: List[str],
-    ) -> Optional[pd.DataFrame]:
-        """Consulta MySQL para contratos que no existen en PG produccion."""
-        if not missing_ids:
-            return None
+    @staticmethod
+    def _mysql_missing_query(batch_str: str):
+        """Construye la consulta MySQL para un lote de contratos faltantes."""
+        from sqlalchemy import text
 
-        try:
-            from sqlalchemy import text
-
-            batch_size = 1000
-            all_rows = []
-
-            for i in range(0, len(missing_ids), batch_size):
-                batch = missing_ids[i : i + batch_size]
-                batch_str = ",".join(str(int(cid)) for cid in batch)
-
-                query = text(f"""
+        return text(f"""
                     SELECT
                         c.id AS contract_id,
                         CONCAT('PHONE', c.id) AS llave,
@@ -155,156 +143,203 @@ class CollectionAgencyReportService:
                              cu.phone, cu.email, cu.dni, cu.departament_reference
                 """)
 
-                result = self.mysql_session.execute(query)
-                for row in result:
-                    all_rows.append(row)
+    def _query_mysql_missing_rows(self, missing_ids: List[int]) -> list:
+        """Ejecuta la consulta MySQL por lotes y devuelve todas las filas."""
+        batch_size = 1000
+        all_rows = []
+        for i in range(0, len(missing_ids), batch_size):
+            batch = missing_ids[i : i + batch_size]
+            batch_str = ",".join(str(int(cid)) for cid in batch)
+            query = self._mysql_missing_query(batch_str)
+            result = self.mysql_session.execute(query)
+            for row in result:
+                all_rows.append(row)
+        return all_rows
+
+    @staticmethod
+    def _compute_factors(dias: int) -> Tuple[float, float]:
+        """Calcula (factor_capital, factor_gastos) segun los dias."""
+        if dias <= 150:
+            fc = 1.0
+        elif dias <= 180:
+            fc = 0.95
+        elif dias <= 300:
+            fc = 0.90
+        else:
+            fc = 0.75
+        if dias <= 90:
+            fg = 0.70
+        elif dias <= 120:
+            fg = 0.60
+        elif dias <= 150:
+            fg = 0.50
+        elif dias <= 365:
+            fg = 0.40
+        else:
+            fg = 0.0
+        return fc, fg
+
+    @staticmethod
+    def _compute_comision(dias: int) -> str:
+        """Calcula la comision segun los dias."""
+        if 1 <= dias <= 60:
+            return '4%'
+        elif 61 <= dias <= 90:
+            return '6%'
+        elif 91 <= dias <= 150:
+            return '8%'
+        elif 151 <= dias <= 210:
+            return '11%'
+        elif dias == 211:
+            return '13%'
+        elif dias >= 212:
+            return '15%'
+        else:
+            return '0%'
+
+    @staticmethod
+    def _compute_rango(dias: int) -> str:
+        """Calcula el rango segun los dias."""
+        if 1 <= dias <= 30:
+            return '1_30'
+        elif 31 <= dias <= 60:
+            return '31_60'
+        elif 61 <= dias <= 90:
+            return '61_90'
+        elif 91 <= dias <= 150:
+            return '91_150'
+        elif 151 <= dias <= 210:
+            return '151_210'
+        elif dias == 211:
+            return '211'
+        elif dias >= 212:
+            return 'Cartera Castigada'
+        else:
+            return '0'
+
+    @staticmethod
+    def _assign_payment_options(r, cols_lower, deuda, vfd, capital, quota) -> None:
+        """Asigna las opciones de pago (opciones 1-4) en la fila r."""
+        vop1 = cols_lower.get('valor_opcion_1')
+        if vop1:
+            r[vop1] = quota
+        o2_1 = cols_lower.get('valor_1_cuota_opcion_2')
+        if o2_1:
+            r[o2_1] = deuda
+        o2_2 = cols_lower.get('valor_2_cuotas_opcion_2')
+        if o2_2:
+            r[o2_2] = round(deuda / 2) if deuda else 0
+        o2_3 = cols_lower.get('valor_3_cuotas_opcion_2')
+        if o2_3:
+            r[o2_3] = round(deuda / 3) if deuda > 600000 else None
+        o3_1 = cols_lower.get('valor_1_cuota_opcion_3')
+        if o3_1:
+            r[o3_1] = vfd
+        o3_2 = cols_lower.get('valor_2_cuotas_opcion_3')
+        if o3_2:
+            r[o3_2] = round(vfd / 2) if vfd else 0
+        o3_3 = cols_lower.get('valor_3_cuotas_opcion_3')
+        if o3_3:
+            r[o3_3] = round(vfd / 3) if vfd > 600000 else None
+        o4_1 = cols_lower.get('valor_1_cuota_opcion_4')
+        if o4_1:
+            r[o4_1] = capital
+        o4_2 = cols_lower.get('valor_2_cuotas_opcion_4')
+        if o4_2:
+            r[o4_2] = round(capital / 2) if capital else 0
+        o4_3 = cols_lower.get('valor_3_cuotas_opcion_4')
+        if o4_3:
+            r[o4_3] = round(capital / 3) if capital > 600000 else None
+
+    @staticmethod
+    def _assign_descripciones(r, cols_lower) -> None:
+        """Asigna las descripciones de opciones (1-4) en la fila r."""
+        d1 = cols_lower.get('descripcion_opcion_1')
+        if d1:
+            r[d1] = 'Pagar_1_cuota__para_normalizar'
+        d2 = cols_lower.get('descripcion_opcion_2')
+        if d2:
+            r[d2] = 'Pagar_de_1_a_3_cuotas'
+        d3 = cols_lower.get('descripcion_opcion_3')
+        if d3:
+            r[d3] = 'descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k'
+        d4 = cols_lower.get('descripcion_opcion_4')
+        if d4:
+            r[d4] = 'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k'
+
+    def _build_mysql_row(self, row, target_columns, cols_lower, contrato_col) -> dict:
+        """Construye una fila (dict) del DataFrame a partir de una fila MySQL."""
+        (
+            contract_id, llave, producto, cliente, telefono,
+            correo, cedula, ciudad, capital, gastos, deuda,
+            dias, cuotas, quota,
+        ) = row
+
+        capital = float(capital or 0)
+        gastos = float(gastos or 0)
+        deuda = float(deuda or 0)
+        dias = int(dias) if dias is not None else 0
+        cuotas = int(cuotas) if cuotas is not None else 0
+        quota = float(quota) if quota is not None else None
+
+        fc, fg = self._compute_factors(dias)
+        vfd = round(capital * fc + gastos * fg)
+        comision = self._compute_comision(dias)
+        rango = self._compute_rango(dias)
+
+        r = {col: None for col in target_columns}
+        r[contrato_col] = contract_id
+        r[cols_lower.get('llave', 'llave')] = llave
+        r[cols_lower.get('producto', 'producto')] = producto
+        r[cols_lower.get('cliente', 'cliente')] = cliente
+        r[cols_lower.get('telefono', 'telefono')] = telefono
+        r[cols_lower.get('correo', 'correo')] = correo
+        r[cols_lower.get('cedula', 'cedula')] = cedula
+        r[cols_lower.get('ciudad', 'ciudad')] = ciudad
+        r[cols_lower.get('capital_pendiente', 'capital_pendiente')] = capital
+        r[cols_lower.get('gastos_vencidos', 'gastos_vencidos')] = gastos
+        r[cols_lower.get('deuda_actual', 'deuda_actual')] = deuda
+        r[cols_lower.get('dias_iniciales_mes', 'dias_iniciales_mes')] = dias
+        cuotas_key = cols_lower.get('cuotas atrasadas') or cols_lower.get('cuotas_atrasadas') or 'Cuotas Atrasadas'
+        r[cuotas_key] = cuotas
+        pc = cols_lower.get('%_pago_capital')
+        if pc:
+            r[pc] = f"{int(fc * 100)}%"
+        dg = cols_lower.get('%_descuento_gastos')
+        if dg:
+            r[dg] = f"{int(fg * 100)}%"
+        v = cols_lower.get('valor_final_descuento')
+        if v:
+            r[v] = vfd
+        self._assign_payment_options(r, cols_lower, deuda, vfd, capital, quota)
+        cm = cols_lower.get('comision')
+        if cm:
+            r[cm] = comision
+        rg = cols_lower.get('rango')
+        if rg:
+            r[rg] = rango
+        self._assign_descripciones(r, cols_lower)
+        return r
+
+    def _fetch_missing_from_mysql(
+        self, missing_ids: List[int], target_columns: List[str],
+    ) -> Optional[pd.DataFrame]:
+        """Consulta MySQL para contratos que no existen en PG produccion."""
+        if not missing_ids:
+            return None
+
+        try:
+            all_rows = self._query_mysql_missing_rows(missing_ids)
 
             if not all_rows:
                 return None
 
             cols_lower = {str(c).lower(): c for c in target_columns}
             contrato_col = cols_lower.get('contrato_x', 'contrato_x')
-            rows_data = []
-            for row in all_rows:
-                (
-                    contract_id, llave, producto, cliente, telefono,
-                    correo, cedula, ciudad, capital, gastos, deuda,
-                    dias, cuotas, quota,
-                ) = row
-
-                capital = float(capital or 0)
-                gastos = float(gastos or 0)
-                deuda = float(deuda or 0)
-                dias = int(dias) if dias is not None else 0
-                cuotas = int(cuotas) if cuotas is not None else 0
-                quota = float(quota) if quota is not None else None
-
-                if dias <= 150:
-                    fc = 1.0
-                elif dias <= 180:
-                    fc = 0.95
-                elif dias <= 300:
-                    fc = 0.90
-                else:
-                    fc = 0.75
-                if dias <= 90:
-                    fg = 0.70
-                elif dias <= 120:
-                    fg = 0.60
-                elif dias <= 150:
-                    fg = 0.50
-                elif dias <= 365:
-                    fg = 0.40
-                else:
-                    fg = 0.0
-
-                vfd = round(capital * fc + gastos * fg)
-
-                if 1 <= dias <= 60:
-                    comision = '4%'
-                elif 61 <= dias <= 90:
-                    comision = '6%'
-                elif 91 <= dias <= 150:
-                    comision = '8%'
-                elif 151 <= dias <= 210:
-                    comision = '11%'
-                elif dias == 211:
-                    comision = '13%'
-                elif dias >= 212:
-                    comision = '15%'
-                else:
-                    comision = '0%'
-
-                if 1 <= dias <= 30:
-                    rango = '1_30'
-                elif 31 <= dias <= 60:
-                    rango = '31_60'
-                elif 61 <= dias <= 90:
-                    rango = '61_90'
-                elif 91 <= dias <= 150:
-                    rango = '91_150'
-                elif 151 <= dias <= 210:
-                    rango = '151_210'
-                elif dias == 211:
-                    rango = '211'
-                elif dias >= 212:
-                    rango = 'Cartera Castigada'
-                else:
-                    rango = '0'
-
-                r = {col: None for col in target_columns}
-                r[contrato_col] = contract_id
-                r[cols_lower.get('llave', 'llave')] = llave
-                r[cols_lower.get('producto', 'producto')] = producto
-                r[cols_lower.get('cliente', 'cliente')] = cliente
-                r[cols_lower.get('telefono', 'telefono')] = telefono
-                r[cols_lower.get('correo', 'correo')] = correo
-                r[cols_lower.get('cedula', 'cedula')] = cedula
-                r[cols_lower.get('ciudad', 'ciudad')] = ciudad
-                r[cols_lower.get('capital_pendiente', 'capital_pendiente')] = capital
-                r[cols_lower.get('gastos_vencidos', 'gastos_vencidos')] = gastos
-                r[cols_lower.get('deuda_actual', 'deuda_actual')] = deuda
-                r[cols_lower.get('dias_iniciales_mes', 'dias_iniciales_mes')] = dias
-                cuotas_key = cols_lower.get('cuotas atrasadas') or cols_lower.get('cuotas_atrasadas') or 'Cuotas Atrasadas'
-                r[cuotas_key] = cuotas
-                pc = cols_lower.get('%_pago_capital')
-                if pc:
-                    r[pc] = f"{int(fc * 100)}%"
-                dg = cols_lower.get('%_descuento_gastos')
-                if dg:
-                    r[dg] = f"{int(fg * 100)}%"
-                v = cols_lower.get('valor_final_descuento')
-                if v:
-                    r[v] = vfd
-                vop1 = cols_lower.get('valor_opcion_1')
-                if vop1:
-                    r[vop1] = quota
-                o2_1 = cols_lower.get('valor_1_cuota_opcion_2')
-                if o2_1:
-                    r[o2_1] = deuda
-                o2_2 = cols_lower.get('valor_2_cuotas_opcion_2')
-                if o2_2:
-                    r[o2_2] = round(deuda / 2) if deuda else 0
-                o2_3 = cols_lower.get('valor_3_cuotas_opcion_2')
-                if o2_3:
-                    r[o2_3] = round(deuda / 3) if deuda > 600000 else None
-                o3_1 = cols_lower.get('valor_1_cuota_opcion_3')
-                if o3_1:
-                    r[o3_1] = vfd
-                o3_2 = cols_lower.get('valor_2_cuotas_opcion_3')
-                if o3_2:
-                    r[o3_2] = round(vfd / 2) if vfd else 0
-                o3_3 = cols_lower.get('valor_3_cuotas_opcion_3')
-                if o3_3:
-                    r[o3_3] = round(vfd / 3) if vfd > 600000 else None
-                o4_1 = cols_lower.get('valor_1_cuota_opcion_4')
-                if o4_1:
-                    r[o4_1] = capital
-                o4_2 = cols_lower.get('valor_2_cuotas_opcion_4')
-                if o4_2:
-                    r[o4_2] = round(capital / 2) if capital else 0
-                o4_3 = cols_lower.get('valor_3_cuotas_opcion_4')
-                if o4_3:
-                    r[o4_3] = round(capital / 3) if capital > 600000 else None
-                cm = cols_lower.get('comision')
-                if cm:
-                    r[cm] = comision
-                rg = cols_lower.get('rango')
-                if rg:
-                    r[rg] = rango
-                d1 = cols_lower.get('descripcion_opcion_1')
-                if d1:
-                    r[d1] = 'Pagar_1_cuota__para_normalizar'
-                d2 = cols_lower.get('descripcion_opcion_2')
-                if d2:
-                    r[d2] = 'Pagar_de_1_a_3_cuotas'
-                d3 = cols_lower.get('descripcion_opcion_3')
-                if d3:
-                    r[d3] = 'descuento_1_cta_100%_2ctas<=$600k__3ctas>$600k'
-                d4 = cols_lower.get('descripcion_opcion_4')
-                if d4:
-                    r[d4] = 'cap_pendiente_1_cta_100%_2ctas<=$600k__3ctas>$600k'
-                rows_data.append(r)
+            rows_data = [
+                self._build_mysql_row(row, target_columns, cols_lower, contrato_col)
+                for row in all_rows
+            ]
 
             return pd.DataFrame(rows_data)
 
@@ -623,24 +658,123 @@ ORDER BY c.id ASC;
             t1.to_excel(writer, sheet_name='Twist1', index=False)
             t2.to_excel(writer, sheet_name='Twist2', index=False)
 
+    def _connect_prod(self):
+        """Abre una conexion psycopg2 a PG produccion."""
+        return psycopg2.connect(
+            host=self.DB_CONFIG_PROD['host'],
+            user=self.DB_CONFIG_PROD['user'],
+            password=self.DB_CONFIG_PROD['password'],
+            dbname=self.DB_CONFIG_PROD['database'],
+            port=self.DB_CONFIG_PROD['port'],
+            options=self.DB_CONFIG_PROD['options']
+        )
+
+    def _load_house_dataframe(self, conn_prod, lista_contratos, contracts, label):
+        """Carga el DataFrame del informe y recupera contratos faltantes desde MySQL."""
+        query = self._generar_query(lista_contratos)
+        df = pd.read_sql(query, conn_prod)
+
+        # Recuperar contratos faltantes desde MySQL
+        if 'contrato_x' in df.columns and len(df) < len(contracts):
+            reported_ids = set(df['contrato_x'].dropna().astype(int).values)
+            missing_ids = [cid for cid in contracts if cid not in reported_ids]
+            if missing_ids:
+                logger.warning(
+                    "%s: %d contratos no en PG produccion. Consultando MySQL.",
+                    label,
+                    len(missing_ids),
+                )
+                mysql_df = self._fetch_missing_from_mysql(missing_ids, df.columns.tolist())
+                if mysql_df is not None and not mysql_df.empty:
+                    df = pd.concat([df, mysql_df], ignore_index=True)
+                    logger.info("%s: %d contratos recuperados desde MySQL.", label, len(mysql_df))
+
+        # Eliminar campos no deseados
+        for col in ['cantidad_cuotas_pagados', 'Marca']:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+
+        return df
+
+    def _generate_serlefin_report(self, contracts_81, fecha_actual, reports_dir, result) -> None:
+        """Genera el informe de la casa SERLEFIN (user 81)."""
+        logger.info(f"\nðŸ“Š Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
+        lista_contratos_81 = ",".join(str(x) for x in contracts_81)
+
+        conn_prod = self._connect_prod()
+
+        try:
+            df_81 = self._load_house_dataframe(conn_prod, lista_contratos_81, contracts_81, "SERLEFIN")
+
+            # Columna "Tipo": vacia en Serlefin (la franja 31-60 es solo Cobyser).
+            df_81['Tipo'] = ''
+
+            # Agregar campo NIT al inicio
+            df_81.insert(0, 'NIT', '901546410-9')
+
+            # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
+            file_name_81 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES.xlsx"
+            file_path_81 = os.path.join(reports_dir, file_name_81)
+            self._write_multiproduct_excel(df_81, file_path_81, 81)
+
+            result['serlefin_file'] = file_path_81
+            logger.info(f"âœ… INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
+
+        finally:
+            conn_prod.close()
+
+    def _generate_cobyser_report(self, contracts_45, fecha_actual, reports_dir, result) -> None:
+        """Genera el informe de la casa COBYSER (user 45)."""
+        logger.info(f"\nðŸ“Š Generando reporte para USER 45 - COBYSER ({len(contracts_45)} contratos)...")
+        lista_contratos_45 = ",".join(str(x) for x in contracts_45)
+
+        conn_prod = self._connect_prod()
+
+        try:
+            df_45 = self._load_house_dataframe(conn_prod, lista_contratos_45, contracts_45, "COBYSER")
+
+            # Cambiar el campo Comision a 30 en todos los registros
+            if 'Comision' in df_45.columns:
+                df_45['Comision'] = 30
+
+            # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar".
+            df_45['Tipo'] = ''
+            if 'Rango' in df_45.columns:
+                es_franja = df_45['Rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+                df_45.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+
+            # Agregar campo NIT al inicio
+            df_45.insert(0, 'NIT', '901546410-9')
+
+            # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
+            file_name_45 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES Cobyser.xlsx"
+            file_path_45 = os.path.join(reports_dir, file_name_45)
+            self._write_multiproduct_excel(df_45, file_path_45, 45)
+
+            result['cobyser_file'] = file_path_45
+            logger.info(f"âœ… INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")
+
+        finally:
+            conn_prod.close()
+
     def generate_reports(self) -> Dict[str, str]:
         """
         Genera informes de casa de cobranza para usuarios 81 (SERLEFIN) y 45 (COBYSER)
-        
+
         Returns:
             Dict con las rutas de los archivos generados
         """
         logger.info("=" * 80)
         logger.info("GENERANDO INFORMES DE CASA DE COBRANZA")
         logger.info("=" * 80)
-        
+
         result = {
             'serlefin_file': None,
             'cobyser_file': None,
             'serlefin_contracts': 0,
             'cobyser_contracts': 0
         }
-        
+
         # Obtener contratos asignados (TODOS los usuarios de cada casa)
         logger.info("1) Obteniendo contratos asignados...")
         contracts_81 = self._get_assigned_contracts_for_house(settings.SERLEFIN_USERS)
@@ -655,127 +789,20 @@ ORDER BY c.id ASC;
         if not contracts_81 and not contracts_45:
             logger.warning("No hay contratos asignados a Serlefin ni Cobyser")
             return result
-        
+
         # Fecha actual para nombres de archivo
         fecha_actual = datetime.now().strftime('%d-%m-%y')
         reports_dir = settings.REPORTS_DIR
         os.makedirs(reports_dir, exist_ok=True)
-        
+
         # GENERAR INFORME USER 81 (SERLEFIN)
         if contracts_81:
-            logger.info(f"\nðŸ“Š Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
-            lista_contratos_81 = ",".join(str(x) for x in contracts_81)
-            
-            conn_prod = psycopg2.connect(
-                host=self.DB_CONFIG_PROD['host'],
-                user=self.DB_CONFIG_PROD['user'],
-                password=self.DB_CONFIG_PROD['password'],
-                dbname=self.DB_CONFIG_PROD['database'],
-                port=self.DB_CONFIG_PROD['port'],
-                options=self.DB_CONFIG_PROD['options']
-            )
-            
-            try:
-                query_81 = self._generar_query(lista_contratos_81)
-                df_81 = pd.read_sql(query_81, conn_prod)
+            self._generate_serlefin_report(contracts_81, fecha_actual, reports_dir, result)
 
-                # Recuperar contratos faltantes desde MySQL
-                if 'contrato_x' in df_81.columns and len(df_81) < len(contracts_81):
-                    reported_ids = set(df_81['contrato_x'].dropna().astype(int).values)
-                    missing_ids = [cid for cid in contracts_81 if cid not in reported_ids]
-                    if missing_ids:
-                        logger.warning(
-                            "SERLEFIN: %d contratos no en PG produccion. Consultando MySQL.",
-                            len(missing_ids),
-                        )
-                        mysql_df = self._fetch_missing_from_mysql(missing_ids, df_81.columns.tolist())
-                        if mysql_df is not None and not mysql_df.empty:
-                            df_81 = pd.concat([df_81, mysql_df], ignore_index=True)
-                            logger.info("SERLEFIN: %d contratos recuperados desde MySQL.", len(mysql_df))
-
-                # Eliminar campos no deseados
-                for col in ['cantidad_cuotas_pagados', 'Marca']:
-                    if col in df_81.columns:
-                        df_81 = df_81.drop(columns=[col])
-
-                # Columna "Tipo": vacia en Serlefin (la franja 31-60 es solo Cobyser).
-                df_81['Tipo'] = ''
-
-                # Agregar campo NIT al inicio
-                df_81.insert(0, 'NIT', '901546410-9')
-
-                # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
-                file_name_81 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES.xlsx"
-                file_path_81 = os.path.join(reports_dir, file_name_81)
-                self._write_multiproduct_excel(df_81, file_path_81, 81)
-                
-                result['serlefin_file'] = file_path_81
-                logger.info(f"âœ… INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
-                
-            finally:
-                conn_prod.close()
-        
         # GENERAR INFORME USER 45 (COBYSER)
         if contracts_45:
-            logger.info(f"\nðŸ“Š Generando reporte para USER 45 - COBYSER ({len(contracts_45)} contratos)...")
-            lista_contratos_45 = ",".join(str(x) for x in contracts_45)
-            
-            conn_prod = psycopg2.connect(
-                host=self.DB_CONFIG_PROD['host'],
-                user=self.DB_CONFIG_PROD['user'],
-                password=self.DB_CONFIG_PROD['password'],
-                dbname=self.DB_CONFIG_PROD['database'],
-                port=self.DB_CONFIG_PROD['port'],
-                options=self.DB_CONFIG_PROD['options']
-            )
-            
-            try:
-                query_45 = self._generar_query(lista_contratos_45)
-                df_45 = pd.read_sql(query_45, conn_prod)
+            self._generate_cobyser_report(contracts_45, fecha_actual, reports_dir, result)
 
-                # Recuperar contratos faltantes desde MySQL
-                if 'contrato_x' in df_45.columns and len(df_45) < len(contracts_45):
-                    reported_ids = set(df_45['contrato_x'].dropna().astype(int).values)
-                    missing_ids = [cid for cid in contracts_45 if cid not in reported_ids]
-                    if missing_ids:
-                        logger.warning(
-                            "COBYSER: %d contratos no en PG produccion. Consultando MySQL.",
-                            len(missing_ids),
-                        )
-                        mysql_df = self._fetch_missing_from_mysql(missing_ids, df_45.columns.tolist())
-                        if mysql_df is not None and not mysql_df.empty:
-                            df_45 = pd.concat([df_45, mysql_df], ignore_index=True)
-                            logger.info("COBYSER: %d contratos recuperados desde MySQL.", len(mysql_df))
-
-                # Eliminar campos no deseados
-                for col in ['cantidad_cuotas_pagados', 'Marca']:
-                    if col in df_45.columns:
-                        df_45 = df_45.drop(columns=[col])
-
-                # Cambiar el campo Comision a 30 en todos los registros
-                if 'Comision' in df_45.columns:
-                    df_45['Comision'] = 30
-
-                # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar".
-                df_45['Tipo'] = ''
-                if 'Rango' in df_45.columns:
-                    es_franja = df_45['Rango'].astype(str).isin(['31_60', '31_45', '46_60'])
-                    df_45.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
-
-                # Agregar campo NIT al inicio
-                df_45.insert(0, 'NIT', '901546410-9')
-
-                # Guardar Excel (3 hojas: Phone/Twist1/Twist2)
-                file_name_45 = f"AloCredit-Phone-{fecha_actual}  INFORME MARTES Y JUEVES Cobyser.xlsx"
-                file_path_45 = os.path.join(reports_dir, file_name_45)
-                self._write_multiproduct_excel(df_45, file_path_45, 45)
-                
-                result['cobyser_file'] = file_path_45
-                logger.info(f"âœ… INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")
-                
-            finally:
-                conn_prod.close()
-        
         logger.info("\nðŸ”¥ PROCESO COMPLETADO")
         return result
 

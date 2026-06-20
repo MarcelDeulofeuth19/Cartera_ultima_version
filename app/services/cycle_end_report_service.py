@@ -45,13 +45,15 @@ HOUSES: Dict[str, Tuple[str, List[int]]] = {
     "cobyser": ("Cobyser", list(settings.COBYSER_USERS)),
 }
 
+RANGO_INICIAL = "Rango Inicial"
+
 OUTPUT_COLUMNS = [
     "Llave", "Producto", "Contrato", "Cedula", "estado_contrato",
     "cantidad_cuotas_atrasadas", "vr_pagos_atrasadas",
     "Cuotas_pendientes", "vr_cuotas_pendientes",
     "cantidad_cuotas_sin_pagar", "vr_cuotas_sin_pagar",
     "cantidad_cuotas_pagados", "Valor_cuotas_pagadas",
-    "Dias_iniciales_Mes", "Rango Inicial",
+    "Dias_iniciales_Mes", RANGO_INICIAL,
     "Dias_Actual", "Rango_Actual", "Tipo",
     "Ingreso_Mes_Actual", "Fecha_ingreso_actual",
     "MOTIVO", "Pais", "intentos",
@@ -394,7 +396,7 @@ def _build_twist_rows_for_cycle(user_ids: List[int], house_key: str) -> "pd.Data
                     "Cedula": r.get("cedula"),
                     "Dias_iniciales_Mes": r.get("dias_iniciales_mes"),
                     "Dias_Actual": r.get("dias_iniciales_mes"),
-                    "Rango Inicial": rango,
+                    RANGO_INICIAL: rango,
                     "Rango_Actual": rango,
                     "Tipo": tipo,
                     "Ingreso_Mes_Actual": 0,
@@ -413,20 +415,10 @@ def _build_twist_rows_for_cycle(user_ids: List[int], house_key: str) -> "pd.Data
     return tdf[OUTPUT_COLUMNS]
 
 
-def generate_house_csv(
-    house_key: str,
-    prim_dia: date,
-    fecha_tope: date,
-    output_dir: Path,
-) -> Dict:
-    """Genera el CSV de 29 columnas para una casa. Retorna dict con ruta y stats."""
-    label, user_ids = HOUSES[house_key]
-    contracts = get_assigned_contracts(user_ids)
-    logger.info("%s: %d contratos asignados hoy", label, len(contracts))
-
-    if not contracts:
-        raise RuntimeError(f"La casa {label} no tiene contratos asignados hoy")
-
+def _load_merged_dataframe(
+    contracts: List[int], prim_dia: date, fecha_tope: date, label: str
+) -> pd.DataFrame:
+    """Consulta PG prod (con respaldo MySQL), pagos e indicadores y los une por contrato."""
     df_prod = _query_pg_prod(contracts, prim_dia, fecha_tope)
     found = set(df_prod["contrato"].astype(int).tolist()) if not df_prod.empty else set()
     missing = [c for c in contracts if c not in found]
@@ -440,8 +432,11 @@ def generate_house_csv(
     df_pagos = _query_mysql_pagos(contracts, prim_dia, fecha_tope)
     df_ind = _query_pg_indicators(contracts, fecha_tope)
 
-    merged = df_prod.merge(df_pagos, on="contrato", how="left").merge(df_ind, on="contrato", how="left")
+    return df_prod.merge(df_pagos, on="contrato", how="left").merge(df_ind, on="contrato", how="left")
 
+
+def _populate_output_columns(merged: pd.DataFrame, house_key: str) -> None:
+    """Construye in-place todas las columnas de OUTPUT_COLUMNS sobre `merged`."""
     merged["Llave"] = "PHONE" + merged["contrato"].astype(str)
     merged["Producto"] = "PHONE"
     merged["Contrato"] = merged["contrato"]
@@ -462,14 +457,14 @@ def generate_house_csv(
         d = int(d or 0)
         return get_assignment_dpd_range(d) or get_dpd_range(d) or "0"
 
-    merged["Rango Inicial"] = merged["Dias_iniciales_Mes"].apply(to_rango)
+    merged[RANGO_INICIAL] = merged["Dias_iniciales_Mes"].apply(to_rango)
     merged["Rango_Actual"] = merged["Dias_Actual"].apply(to_rango)
 
     # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar". Solo Cobyser;
     # se evalua por el rango inicial (buckets 31_45/46_60). Vacia en el resto.
     merged["Tipo"] = ""
     if house_key == "cobyser":
-        es_franja = merged["Rango Inicial"].astype(str).isin({"31_45", "46_60", "31_60"})
+        es_franja = merged[RANGO_INICIAL].astype(str).isin({"31_45", "46_60", "31_60"})
         merged.loc[es_franja, "Tipo"] = "Cédulas Impar"
 
     merged["Ingreso_Mes_Actual"] = merged.get("monto_mes", 0).fillna(0)
@@ -488,6 +483,25 @@ def generate_house_csv(
     merged["intentos"] = merged.get("intentos", 0).fillna(0).astype(int)
     merged["Pais"] = "CO"
     merged["Telefono"] = merged.get("telefono")
+
+
+def generate_house_csv(
+    house_key: str,
+    prim_dia: date,
+    fecha_tope: date,
+    output_dir: Path,
+) -> Dict:
+    """Genera el CSV de 29 columnas para una casa. Retorna dict con ruta y stats."""
+    label, user_ids = HOUSES[house_key]
+    contracts = get_assigned_contracts(user_ids)
+    logger.info("%s: %d contratos asignados hoy", label, len(contracts))
+
+    if not contracts:
+        raise RuntimeError(f"La casa {label} no tiene contratos asignados hoy")
+
+    merged = _load_merged_dataframe(contracts, prim_dia, fecha_tope, label)
+
+    _populate_output_columns(merged, house_key)
 
     final = merged[OUTPUT_COLUMNS].copy()
 
@@ -631,9 +645,9 @@ def generate_and_send_cycle_end_report(
     prim_dia, fecha_tope = month_bounds(report_date)
 
     if recipient_to is None:
-        recipient_to = settings.monthly_report_to
+        recipient_to = settings.monthly_report_to_list
     if recipient_cc is None:
-        recipient_cc = settings.monthly_report_cc
+        recipient_cc = settings.monthly_report_cc_list
     if output_dir is None:
         output_dir = Path(settings.REPORTS_DIR)
 

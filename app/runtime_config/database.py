@@ -1,6 +1,7 @@
 """
 Conexion y sesiones para la base interna de configuracion/auditoria.
 """
+from collections.abc import Iterator
 from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -28,7 +29,7 @@ def ensure_runtime_config_tables() -> None:
 
 
 @contextmanager
-def get_runtime_config_session() -> Session:
+def get_runtime_config_session() -> Iterator[Session]:
     """Context manager de sesion para base interna."""
     session: Session = _SessionLocal()
     try:

@@ -3,6 +3,7 @@ Gestión de conexiones a bases de datos MySQL y PostgreSQL.
 Implementa el patrón de sesiones con SQLAlchemy.
 """
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -134,13 +135,13 @@ db_manager = DatabaseManager()
 
 
 # Funciones de conveniencia para dependency injection en FastAPI
-def get_mysql_session():
+def get_mysql_session() -> Iterator[Session]:
     """Dependency injection para sesiones MySQL en FastAPI"""
     with db_manager.get_mysql_session() as session:
         yield session
 
 
-def get_postgres_session():
+def get_postgres_session() -> Iterator[Session]:
     """Dependency injection para sesiones PostgreSQL en FastAPI"""
     with db_manager.get_postgres_session() as session:
         yield session

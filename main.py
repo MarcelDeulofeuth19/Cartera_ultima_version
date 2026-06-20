@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
         if settings.AUTO_ASSIGNMENT_ENABLED:
             logger.info(
                 "  - Scheduler autoasignacion: dias=%s hora=%02d:%02d zona=%s",
-                settings.auto_assignment_weekdays,
+                settings.auto_assignment_weekday_list,
                 settings.AUTO_ASSIGNMENT_HOUR,
                 settings.AUTO_ASSIGNMENT_MINUTE,
                 settings.AUTO_ASSIGNMENT_TIMEZONE,
@@ -122,8 +122,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_allowed_origins,
-    allow_credentials=settings.cors_allow_credentials,
+    allow_origins=settings.cors_allowed_origin_list,
+    allow_credentials=settings.cors_credentials_enabled,
     allow_methods=["*"],
     allow_headers=["*"],
 )

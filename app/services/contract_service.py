@@ -189,7 +189,7 @@ class ContractService:
 
         # Regla: excluir contratos endosados a afianzadora (pagaré).
         pagare_clause = ""
-        pagare_ids = settings.pagare_excluded_status_ids
+        pagare_ids = settings.pagare_excluded_status_id_list
         if pagare_ids:
             pagare_clause = (
                 "  AND (c.pagare_status_id IS NULL OR c.pagare_status_id NOT IN ("
@@ -436,7 +436,7 @@ class ContractService:
 
         # Regla: excluir contratos Twist1 endosados a afianzadora (pagaré).
         pagare_clause = ""
-        pagare_ids = settings.pagare_excluded_status_ids
+        pagare_ids = settings.pagare_excluded_status_id_list
         if pagare_ids:
             pagare_clause = (
                 "  AND (c.twist_pagare_status_id IS NULL OR c.twist_pagare_status_id NOT IN ("
@@ -724,52 +724,7 @@ class ContractService:
         try:
             try:
                 # Estrategia preferida: tabla temporal + JOIN.
-                self.mysql_session.execute(
-                    text(
-                        """
-                        CREATE TEMPORARY TABLE IF NOT EXISTS tmp_contract_state_sync (
-                            contract_id BIGINT PRIMARY KEY
-                        ) ENGINE=MEMORY
-                        """
-                    )
-                )
-                self.mysql_session.execute(text("TRUNCATE TABLE tmp_contract_state_sync"))
-
-                params = [{"contract_id": int(contract_id)} for contract_id in contract_ids]
-                batch_size = 5000
-                for i in range(0, len(params), batch_size):
-                    self.mysql_session.execute(
-                        text(
-                            """
-                            INSERT INTO tmp_contract_state_sync (contract_id)
-                            VALUES (:contract_id)
-                            """
-                        ),
-                        params[i : i + batch_size],
-                    )
-
-                result = self.mysql_session.execute(
-                    text(
-                        """
-                        SELECT
-                            c.id AS contract_id,
-                            COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
-                        FROM contract c
-                        LEFT JOIN contracts_status cs
-                            ON cs.id = c.contracts_status_id
-                        INNER JOIN tmp_contract_state_sync t
-                            ON t.contract_id = c.id
-                        """
-                    )
-                )
-                for row in result:
-                    contract_id = int(row[0])
-                    raw_state = row[1]
-                    state_map[contract_id] = (
-                        str(raw_state).strip()
-                        if raw_state is not None and str(raw_state).strip()
-                        else "SIN_ESTADO"
-                    )
+                self._fill_state_map_with_temp_table(contract_ids, state_map)
             except Exception as temp_error:
                 # Fallback sin privilegios DDL: consulta IN por bloques grandes.
                 logger.info(
@@ -777,32 +732,7 @@ class ContractService:
                     "Usando fallback IN por bloques.",
                     temp_error,
                 )
-                batch_size = 50000
-                for i in range(0, len(contract_ids), batch_size):
-                    batch = contract_ids[i : i + batch_size]
-                    if not batch:
-                        continue
-                    batch_ids = ",".join(str(int(contract_id)) for contract_id in batch)
-
-                    query = f"""
-                    SELECT
-                        c.id AS contract_id,
-                        COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
-                    FROM contract c
-                    LEFT JOIN contracts_status cs
-                        ON cs.id = c.contracts_status_id
-                    WHERE c.id IN ({batch_ids})
-                    """
-
-                    result = self.mysql_session.execute(text(query))
-                    for row in result:
-                        contract_id = int(row[0])
-                        raw_state = row[1]
-                        state_map[contract_id] = (
-                            str(raw_state).strip()
-                            if raw_state is not None and str(raw_state).strip()
-                            else "SIN_ESTADO"
-                        )
+                self._fill_state_map_with_in_clause(contract_ids, state_map)
 
             logger.info(
                 "Estado actual obtenido para %s contratos",
@@ -816,3 +746,87 @@ class ContractService:
                 e,
             )
             raise
+
+    def _fill_state_map_with_temp_table(
+        self,
+        contract_ids: List[int],
+        state_map: Dict[int, str],
+    ) -> None:
+        """Llena state_map usando la estrategia de tabla temporal + JOIN."""
+        self.mysql_session.execute(
+            text(
+                """
+                CREATE TEMPORARY TABLE IF NOT EXISTS tmp_contract_state_sync (
+                    contract_id BIGINT PRIMARY KEY
+                ) ENGINE=MEMORY
+                """
+            )
+        )
+        self.mysql_session.execute(text("TRUNCATE TABLE tmp_contract_state_sync"))
+
+        params = [{"contract_id": int(contract_id)} for contract_id in contract_ids]
+        batch_size = 5000
+        for i in range(0, len(params), batch_size):
+            self.mysql_session.execute(
+                text(
+                    """
+                    INSERT INTO tmp_contract_state_sync (contract_id)
+                    VALUES (:contract_id)
+                    """
+                ),
+                params[i : i + batch_size],
+            )
+
+        result = self.mysql_session.execute(
+            text(
+                """
+                SELECT
+                    c.id AS contract_id,
+                    COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
+                FROM contract c
+                LEFT JOIN contracts_status cs
+                    ON cs.id = c.contracts_status_id
+                INNER JOIN tmp_contract_state_sync t
+                    ON t.contract_id = c.id
+                """
+            )
+        )
+        self._apply_state_rows(result, state_map)
+
+    def _fill_state_map_with_in_clause(
+        self,
+        contract_ids: List[int],
+        state_map: Dict[int, str],
+    ) -> None:
+        """Llena state_map usando la estrategia de IN por bloques grandes."""
+        batch_size = 50000
+        for i in range(0, len(contract_ids), batch_size):
+            batch = contract_ids[i : i + batch_size]
+            if not batch:
+                continue
+            batch_ids = ",".join(str(int(contract_id)) for contract_id in batch)
+
+            query = f"""
+            SELECT
+                c.id AS contract_id,
+                COALESCE(NULLIF(TRIM(cs.name), ''), 'SIN_ESTADO') AS estado_actual
+            FROM contract c
+            LEFT JOIN contracts_status cs
+                ON cs.id = c.contracts_status_id
+            WHERE c.id IN ({batch_ids})
+            """
+
+            result = self.mysql_session.execute(text(query))
+            self._apply_state_rows(result, state_map)
+
+    @staticmethod
+    def _apply_state_rows(result, state_map: Dict[int, str]) -> None:
+        """Vuelca filas (contract_id, estado_actual) en state_map."""
+        for row in result:
+            contract_id = int(row[0])
+            raw_state = row[1]
+            state_map[contract_id] = (
+                str(raw_state).strip()
+                if raw_state is not None and str(raw_state).strip()
+                else "SIN_ESTADO"
+            )

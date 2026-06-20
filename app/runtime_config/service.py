@@ -264,6 +264,43 @@ class RuntimeConfigService:
         new_lines: List[str] = []
         changed = not file_exists
 
+        rewrite_changed = RuntimeConfigService._rewrite_existing_lines(
+            lines=lines,
+            values=values,
+            key_pattern=key_pattern,
+            new_lines=new_lines,
+            pending_keys=pending_keys,
+        )
+        if rewrite_changed:
+            changed = True
+
+        if pending_keys:
+            RuntimeConfigService._append_pending_keys(
+                new_lines=new_lines,
+                pending_keys=pending_keys,
+                values=values,
+            )
+            changed = True
+
+        if changed:
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        return changed
+
+    @staticmethod
+    def _rewrite_existing_lines(
+        *,
+        lines: List[str],
+        values: Dict[str, str],
+        key_pattern: "re.Pattern[str]",
+        new_lines: List[str],
+        pending_keys: set,
+    ) -> bool:
+        """
+        Reescribe las lineas existentes dentro de new_lines, descartando de
+        pending_keys las llaves ya presentes. Retorna True si alguna linea cambio.
+        """
+        changed = False
         for line in lines:
             match = key_pattern.match(line)
             if not match:
@@ -280,15 +317,19 @@ class RuntimeConfigService:
                 changed = True
             new_lines.append(replacement)
             pending_keys.discard(key)
-
-        if pending_keys:
-            if new_lines and new_lines[-1].strip():
-                new_lines.append("")
-            for key in sorted(pending_keys):
-                new_lines.append(f"{key}={values[key]}")
-            changed = True
-
-        if changed:
-            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-
         return changed
+
+    @staticmethod
+    def _append_pending_keys(
+        *,
+        new_lines: List[str],
+        pending_keys: set,
+        values: Dict[str, str],
+    ) -> None:
+        """
+        Anexa al final de new_lines las llaves que aun no estaban en el archivo.
+        """
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        for key in sorted(pending_keys):
+            new_lines.append(f"{key}={values[key]}")

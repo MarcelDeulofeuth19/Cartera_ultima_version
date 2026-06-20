@@ -176,6 +176,63 @@ class DivisionService:
             )
             raise
 
+    def _evaluate_fixed_record(
+        self, record, today, validity_datetime, stats, contracts_to_unfix
+    ) -> bool:
+        """Aplica los filtros de contrato fijo a un registro de managements."""
+        if record.effect == settings.EFFECT_ACUERDO_PAGO:
+            return self._evaluate_acuerdo_pago(
+                record, today, stats, contracts_to_unfix
+            )
+        elif record.effect == settings.EFFECT_PAGO_TOTAL:
+            return self._evaluate_pago_total(
+                record, validity_datetime, stats, contracts_to_unfix
+            )
+        return False
+
+    def _evaluate_acuerdo_pago(
+        self, record, today, stats, contracts_to_unfix
+    ) -> bool:
+        """FILTRO 0: acuerdo_de_pago. Devuelve True si la promesa sigue vigente."""
+        if record.promise_date and record.promise_date >= today:
+            stats['acuerdo_pago_valid'] += 1
+            logger.info(f"  ✓ Acuerdo VÁLIDO: contrato {record.contract_id}, user {record.user_id}, promise_date={record.promise_date} >= {today}")
+            return True
+        contracts_to_unfix.append(record.id)
+        stats['acuerdo_pago_expired'] += 1
+        if record.promise_date:
+            logger.info(f"  ✗ Acuerdo EXPIRADO: contrato {record.contract_id}, user {record.user_id}, promise_date={record.promise_date} < {today}")
+        else:
+            logger.info(f"  ✗ Acuerdo SIN FECHA: contrato {record.contract_id}, user {record.user_id}, promise_date=None")
+        return False
+
+    def _evaluate_pago_total(
+        self, record, validity_datetime, stats, contracts_to_unfix
+    ) -> bool:
+        """FILTRO 1: pago_total. Devuelve True si el pago es de máximo 30 días."""
+        from datetime import datetime
+
+        if record.management_date:
+            # Convertir a naive si es aware para comparación
+            mgmt_date = record.management_date
+            if mgmt_date.tzinfo is not None:
+                mgmt_date = mgmt_date.replace(tzinfo=None)
+
+            # Rango de 1 mes: hace 30 días <= mgmt_date <= hoy
+            hoy_naive = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=None)
+            if validity_datetime <= mgmt_date <= hoy_naive:
+                stats['pago_total_valid'] += 1
+                logger.info(f"  ✓ Pago VÁLIDO: contrato {record.contract_id}, user {record.user_id}, mgmt_date={mgmt_date.date()} en [{validity_datetime.date()}, {hoy_naive.date()}]")
+                return True
+            contracts_to_unfix.append(record.id)
+            stats['pago_total_expired'] += 1
+            logger.info(f"  ✗ Pago EXPIRADO: contrato {record.contract_id}, user {record.user_id}, mgmt_date={mgmt_date.date()} fuera [{validity_datetime.date()}, {hoy_naive.date()}]")
+            return False
+        contracts_to_unfix.append(record.id)
+        stats['pago_total_expired'] += 1
+        logger.info(f"  ✗ Pago SIN FECHA: contrato {record.contract_id}, user {record.user_id}, management_date=None")
+        return False
+
     def get_fixed_contracts(self) -> Dict[int, Set[int]]:
         """
         Obtiene los contratos FIJOS desde la tabla managements en PostgreSQL.
@@ -245,45 +302,10 @@ class DivisionService:
             }
             
             for record in all_managements:
-                is_valid = False
-                
-                # FILTRO 0: acuerdo_de_pago
-                if record.effect == settings.EFFECT_ACUERDO_PAGO:
-                    if record.promise_date and record.promise_date >= today:
-                        is_valid = True
-                        stats['acuerdo_pago_valid'] += 1
-                        logger.info(f"  ✓ Acuerdo VÁLIDO: contrato {record.contract_id}, user {record.user_id}, promise_date={record.promise_date} >= {today}")
-                    else:
-                        contracts_to_unfix.append(record.id)
-                        stats['acuerdo_pago_expired'] += 1
-                        if record.promise_date:
-                            logger.info(f"  ✗ Acuerdo EXPIRADO: contrato {record.contract_id}, user {record.user_id}, promise_date={record.promise_date} < {today}")
-                        else:
-                            logger.info(f"  ✗ Acuerdo SIN FECHA: contrato {record.contract_id}, user {record.user_id}, promise_date=None")
-                
-                # FILTRO 1: pago_total
-                elif record.effect == settings.EFFECT_PAGO_TOTAL:
-                    if record.management_date:
-                        # Convertir a naive si es aware para comparación
-                        mgmt_date = record.management_date
-                        if mgmt_date.tzinfo is not None:
-                            mgmt_date = mgmt_date.replace(tzinfo=None)
-                        
-                        # Rango de 1 mes: hace 30 días <= mgmt_date <= hoy
-                        hoy_naive = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=None)
-                        if validity_datetime <= mgmt_date <= hoy_naive:
-                            is_valid = True
-                            stats['pago_total_valid'] += 1
-                            logger.info(f"  ✓ Pago VÁLIDO: contrato {record.contract_id}, user {record.user_id}, mgmt_date={mgmt_date.date()} en [{validity_datetime.date()}, {hoy_naive.date()}]")
-                        else:
-                            contracts_to_unfix.append(record.id)
-                            stats['pago_total_expired'] += 1
-                            logger.info(f"  ✗ Pago EXPIRADO: contrato {record.contract_id}, user {record.user_id}, mgmt_date={mgmt_date.date()} fuera [{validity_datetime.date()}, {hoy_naive.date()}]")
-                    else:
-                        contracts_to_unfix.append(record.id)
-                        stats['pago_total_expired'] += 1
-                        logger.info(f"  ✗ Pago SIN FECHA: contrato {record.contract_id}, user {record.user_id}, management_date=None")
-                
+                is_valid = self._evaluate_fixed_record(
+                    record, today, validity_datetime, stats, contracts_to_unfix
+                )
+
                 # Si es válido, asignar al usuario correspondiente
                 if is_valid and record.user_id in settings.DIVISION_USER_IDS:
                     fixed_contracts[record.user_id].add(record.contract_id)
@@ -387,8 +409,86 @@ class DivisionService:
             logger.error(f"✗ Error al consultar contratos para división: {e}")
             raise
     
+    def _assign_unassigned_fixed(
+        self, new_assignments, fixed_contracts, current_assignments_in_range
+    ) -> None:
+        """Paso 1: agrega los contratos fijos que aún no están asignados."""
+        logger.info("Paso 1: Asignando contratos fijos no asignados...")
+        for user_id in settings.DIVISION_USER_IDS:
+            fixed_not_assigned = (
+                fixed_contracts[user_id] - current_assignments_in_range[user_id]
+            )
+
+            for contract_id in fixed_not_assigned:
+                new_assignments[user_id].append(contract_id)
+
+            if fixed_not_assigned:
+                logger.info(
+                    f"  Usuario {user_id}: {len(fixed_not_assigned)} "
+                    f"contratos fijos agregados"
+                )
+
+    def _distribute_new_contracts(
+        self, contracts_new, new_assignments, fixed_contracts,
+        current_assignments_in_range
+    ) -> None:
+        """Paso 2: distribuye equitativamente los contratos nuevos."""
+        logger.info(
+            f"Paso 2: Ordenando {len(contracts_new)} contratos NUEVOS "
+            f"por días de atraso y dividiendo equitativamente..."
+        )
+
+        # Ordenar por días de atraso descendente
+        sorted_contracts = sorted(
+            contracts_new,
+            key=lambda x: x['days_overdue'],
+            reverse=True
+        )
+
+        # BALANCE EQUITATIVO: Calcular contratos EN RANGO 1-60 días por usuario
+        # Incluye: SOLO contratos del rango 1-60 días + fijos que se van a asignar ahora
+        # NO incluye contratos de otros rangos (0 días, 61-210 días, etc.)
+        current_counts = {}
+        for user_id in settings.DIVISION_USER_IDS:
+            # Contar SOLO contratos EN RANGO (manuales + automáticos) + fijos nuevos
+            current_counts[user_id] = (
+                len(current_assignments_in_range[user_id]) +
+                len(new_assignments[user_id])
+            )
+
+        logger.info("  Balance actual por usuario (SOLO rango 1-60 días + fijos nuevos):")
+        for user_id in settings.DIVISION_USER_IDS:
+            fixed_auto = len(fixed_contracts[user_id])
+            current_in_range = len(current_assignments_in_range[user_id])
+            logger.info(
+                f"    Usuario {user_id}: {current_counts[user_id]} totales en rango = "
+                f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {len(new_assignments[user_id])} fijos nuevos"
+            )
+
+        # Asignar cada contrato al usuario que tiene MENOS contratos
+        # Esto garantiza distribución equitativa (máximo 1 de diferencia)
+        for contract in sorted_contracts:
+            # Encontrar usuario con menor cantidad de contratos
+            min_user = min(current_counts.keys(), key=lambda u: current_counts[u])
+
+            # Asignar contrato a ese usuario
+            new_assignments[min_user].append(contract['contract_id'])
+
+            # Actualizar contador
+            current_counts[min_user] += 1
+
+        logger.info("  Balance FINAL por usuario (después de asignar nuevos):")
+        for user_id in settings.DIVISION_USER_IDS:
+            fixed_auto = len(fixed_contracts[user_id])
+            current_in_range = len(current_assignments_in_range[user_id])
+            nuevos = len(new_assignments[user_id])
+            logger.info(
+                f"    Usuario {user_id}: {current_counts[user_id]} totales en rango 1-60 = "
+                f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {nuevos} nuevos"
+            )
+
     def balance_assignments(
-        self, 
+        self,
         contracts_with_days: List[Dict],
         fixed_contracts: Dict[int, Set[int]],
         current_assignments: Dict[int, Set[int]]
@@ -481,76 +581,16 @@ class DivisionService:
         )
         
         # Paso 1: Asignar contratos fijos que no estén asignados
-        logger.info("Paso 1: Asignando contratos fijos no asignados...")
-        for user_id in settings.DIVISION_USER_IDS:
-            fixed_not_assigned = (
-                fixed_contracts[user_id] - current_assignments_in_range[user_id]
-            )
-            
-            for contract_id in fixed_not_assigned:
-                new_assignments[user_id].append(contract_id)
-            
-            if fixed_not_assigned:
-                logger.info(
-                    f"  Usuario {user_id}: {len(fixed_not_assigned)} "
-                    f"contratos fijos agregados"
-                )
-        
+        self._assign_unassigned_fixed(
+            new_assignments, fixed_contracts, current_assignments_in_range
+        )
+
         # Paso 2: Dividir equitativamente contratos nuevos basado en balance actual
         if contracts_new:
-            logger.info(
-                f"Paso 2: Ordenando {len(contracts_new)} contratos NUEVOS "
-                f"por días de atraso y dividiendo equitativamente..."
+            self._distribute_new_contracts(
+                contracts_new, new_assignments, fixed_contracts,
+                current_assignments_in_range
             )
-            
-            # Ordenar por días de atraso descendente
-            sorted_contracts = sorted(
-                contracts_new,
-                key=lambda x: x['days_overdue'],
-                reverse=True
-            )
-            
-# BALANCE EQUITATIVO: Calcular contratos EN RANGO 1-60 días por usuario
-            # Incluye: SOLO contratos del rango 1-60 días + fijos que se van a asignar ahora
-            # NO incluye contratos de otros rangos (0 días, 61-210 días, etc.)
-            current_counts = {}
-            for user_id in settings.DIVISION_USER_IDS:
-                # Contar SOLO contratos EN RANGO (manuales + automáticos) + fijos nuevos
-                current_counts[user_id] = (
-                    len(current_assignments_in_range[user_id]) + 
-                    len(new_assignments[user_id])
-                )
-            
-            logger.info("  Balance actual por usuario (SOLO rango 1-60 días + fijos nuevos):")
-            for user_id in settings.DIVISION_USER_IDS:
-                fixed_auto = len(fixed_contracts[user_id])
-                current_in_range = len(current_assignments_in_range[user_id])
-                logger.info(
-                    f"    Usuario {user_id}: {current_counts[user_id]} totales en rango = "
-                    f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {len(new_assignments[user_id])} fijos nuevos"
-                )
-            
-            # Asignar cada contrato al usuario que tiene MENOS contratos
-            # Esto garantiza distribución equitativa (máximo 1 de diferencia)
-            for contract in sorted_contracts:
-                # Encontrar usuario con menor cantidad de contratos
-                min_user = min(current_counts.keys(), key=lambda u: current_counts[u])
-                
-                # Asignar contrato a ese usuario
-                new_assignments[min_user].append(contract['contract_id'])
-                
-                # Actualizar contador
-                current_counts[min_user] += 1
-            
-            logger.info("  Balance FINAL por usuario (después de asignar nuevos):")
-            for user_id in settings.DIVISION_USER_IDS:
-                fixed_auto = len(fixed_contracts[user_id])
-                current_in_range = len(current_assignments_in_range[user_id])
-                nuevos = len(new_assignments[user_id])
-                logger.info(
-                    f"    Usuario {user_id}: {current_counts[user_id]} totales en rango 1-60 = "
-                    f"{current_in_range} actuales ({fixed_auto} auto-fijos) + {nuevos} nuevos"
-                )
         else:
             logger.info(
                 "Paso 2: No hay contratos nuevos para balancear"
@@ -707,49 +747,17 @@ class DivisionService:
                     for contract_id in fixed_contracts.get(user_id, set())
                     if int(contract_id) not in blocked_ids
                 }
-                
+
                 if not user_fixed_contracts:
                     continue
-                
-                # Identificar contratos fijos que NO existen en ninguna asignación
-                missing_fixed = user_fixed_contracts - existing_contract_ids
-                
-                if missing_fixed:
-                    logger.info(f"  Usuario {user_id}: {len(missing_fixed)} contratos fijos sin asignar")
-                    new_fixed_assignments[user_id] = list(missing_fixed)
-                    
-                    # Insertar contratos fijos faltantes
-                    for contract_id in missing_fixed:
-                        new_assignment = ContractAdvisor(
-                            user_id=user_id,
-                            contract_id=contract_id
-                        )
-                        self.postgres_session.add(new_assignment)
-                        stats['inserted_total'] += 1
-                        stats[f'inserted_user_{user_id}'] += 1
-                        
-                        # Agregar a existing para evitar duplicados
-                        existing_contract_ids.add(contract_id)
-                else:
-                    already = user_fixed_contracts & existing_contract_ids
-                    stats['already_assigned'] += len(already)
-            
-            if stats['inserted_total'] > 0:
-                self.postgres_session.commit()
-                
-                # Registrar en historial
-                logger.info("Registrando contratos fijos de división en historial...")
-                history_stats = self.history_service.register_assignments(new_fixed_assignments)
-                
-                logger.info(f"✓ Contratos fijos de división insertados:")
-                logger.info(f"  - Total: {stats['inserted_total']}")
-                for user_id in settings.DIVISION_USER_IDS:
-                    if stats[f'inserted_user_{user_id}'] > 0:
-                        logger.info(f"  - Usuario {user_id}: {stats[f'inserted_user_{user_id}']} contratos")
-                logger.info(f"  - Historial: {history_stats['total_registered']} registros")
-            else:
-                logger.info(f"✓ Todos los contratos fijos de división ya están asignados ({stats['already_assigned']} contratos)")
-            
+
+                self._process_user_fixed_contracts(
+                    user_id, user_fixed_contracts, existing_contract_ids,
+                    new_fixed_assignments, stats
+                )
+
+            self._finalize_fixed_assignments(stats, new_fixed_assignments)
+
             return stats
         
         except Exception as e:
@@ -757,6 +765,116 @@ class DivisionService:
             self.postgres_session.rollback()
             raise
     
+    def _process_user_fixed_contracts(
+        self, user_id, user_fixed_contracts, existing_contract_ids,
+        new_fixed_assignments, stats
+    ) -> None:
+        """Inserta los contratos fijos faltantes de un usuario y actualiza estadísticas."""
+        # Identificar contratos fijos que NO existen en ninguna asignación
+        missing_fixed = user_fixed_contracts - existing_contract_ids
+
+        if missing_fixed:
+            logger.info(f"  Usuario {user_id}: {len(missing_fixed)} contratos fijos sin asignar")
+            new_fixed_assignments[user_id] = list(missing_fixed)
+
+            # Insertar contratos fijos faltantes
+            for contract_id in missing_fixed:
+                new_assignment = ContractAdvisor(
+                    user_id=user_id,
+                    contract_id=contract_id
+                )
+                self.postgres_session.add(new_assignment)
+                stats['inserted_total'] += 1
+                stats[f'inserted_user_{user_id}'] += 1
+
+                # Agregar a existing para evitar duplicados
+                existing_contract_ids.add(contract_id)
+        else:
+            already = user_fixed_contracts & existing_contract_ids
+            stats['already_assigned'] += len(already)
+
+    def _finalize_fixed_assignments(self, stats, new_fixed_assignments) -> None:
+        """Hace commit, registra en historial y loguea el resultado de contratos fijos."""
+        if stats['inserted_total'] > 0:
+            self.postgres_session.commit()
+
+            # Registrar en historial
+            logger.info("Registrando contratos fijos de división en historial...")
+            history_stats = self.history_service.register_assignments(new_fixed_assignments)
+
+            logger.info(f"✓ Contratos fijos de división insertados:")
+            logger.info(f"  - Total: {stats['inserted_total']}")
+            for user_id in settings.DIVISION_USER_IDS:
+                if stats[f'inserted_user_{user_id}'] > 0:
+                    logger.info(f"  - Usuario {user_id}: {stats[f'inserted_user_{user_id}']} contratos")
+            logger.info(f"  - Historial: {history_stats['total_registered']} registros")
+        else:
+            logger.info(f"✓ Todos los contratos fijos de división ya están asignados ({stats['already_assigned']} contratos)")
+
+    def _resolve_fixed_and_promises(self, blocked_contract_ids, results):
+        """Obtiene contratos fijos, filtra bloqueados y aplica enforcement de promesas."""
+        fixed_contracts = self.get_fixed_contracts()
+        if blocked_contract_ids:
+            fixed_contracts = {
+                user_id: {
+                    int(contract_id)
+                    for contract_id in contract_ids
+                    if int(contract_id) not in blocked_contract_ids
+                }
+                for user_id, contract_ids in fixed_contracts.items()
+            }
+
+        # Contratos con promesa activa se excluyen de asignacion
+        promise_contract_ids: set[int] = set()
+        for contract_ids in fixed_contracts.values():
+            promise_contract_ids.update(contract_ids)
+
+        logger.info(
+            "Contratos con promesa activa excluidos de division: %s",
+            len(promise_contract_ids),
+        )
+
+        # Remover asignaciones activas de contratos con promesa activa
+        results['promise_enforcement_stats'] = (
+            self.enforce_promises_on_active_assignments(promise_contract_ids)
+        )
+
+        results['fixed_contracts'] = {
+            k: list(v) for k, v in fixed_contracts.items()
+        }
+        results['promise_excluded_count'] = len(promise_contract_ids)
+        results['fixed_inserted_stats'] = {
+            "skipped": "contratos con promesa activa no se asignan",
+            "promise_excluded": len(promise_contract_ids),
+        }
+
+        return fixed_contracts, promise_contract_ids
+
+    def _exclude_franja_cobyser(self, excluded_from_assignment, results):
+        """Excluye la franja Cobyser (cedula impar) del proceso de division."""
+        results['franja_cobyser_excluded_count'] = 0
+        if settings.FRANJA_COBYSER_ENABLED:
+            try:
+                franja_odd = self.contract_service.get_franja_cobyser_odd_contracts(
+                    min_days=settings.FRANJA_COBYSER_MIN_DAYS,
+                    max_days=settings.FRANJA_COBYSER_MAX_DAYS,
+                    excluded_contract_ids=excluded_from_assignment or None,
+                )
+                franja_odd_ids = {int(c["contract_id"]) for c in franja_odd}
+                if franja_odd_ids:
+                    logger.info(
+                        "Excluyendo %s contratos de franja Cobyser (cedula impar) de division",
+                        len(franja_odd_ids),
+                    )
+                    excluded_from_assignment = excluded_from_assignment | franja_odd_ids
+                results['franja_cobyser_excluded_count'] = len(franja_odd_ids)
+            except Exception as franja_error:
+                logger.warning(
+                    "No se pudo excluir la franja Cobyser de division: %s",
+                    franja_error,
+                )
+        return excluded_from_assignment
+
     def execute_division_process(self) -> Dict:
         """
         Ejecuta el proceso completo de división de contratos a 8 usuarios.
@@ -804,67 +922,18 @@ class DivisionService:
             )
 
             # 1. Obtener contratos fijos (promesas activas) para excluirlos
-            fixed_contracts = self.get_fixed_contracts()
-            if blocked_contract_ids:
-                fixed_contracts = {
-                    user_id: {
-                        int(contract_id)
-                        for contract_id in contract_ids
-                        if int(contract_id) not in blocked_contract_ids
-                    }
-                    for user_id, contract_ids in fixed_contracts.items()
-                }
-
-            # Contratos con promesa activa se excluyen de asignacion
-            promise_contract_ids: set[int] = set()
-            for contract_ids in fixed_contracts.values():
-                promise_contract_ids.update(contract_ids)
-
-            logger.info(
-                "Contratos con promesa activa excluidos de division: %s",
-                len(promise_contract_ids),
+            fixed_contracts, promise_contract_ids = self._resolve_fixed_and_promises(
+                blocked_contract_ids, results
             )
-
-            # Remover asignaciones activas de contratos con promesa activa
-            results['promise_enforcement_stats'] = (
-                self.enforce_promises_on_active_assignments(promise_contract_ids)
-            )
-
-            results['fixed_contracts'] = {
-                k: list(v) for k, v in fixed_contracts.items()
-            }
-            results['promise_excluded_count'] = len(promise_contract_ids)
-            results['fixed_inserted_stats'] = {
-                "skipped": "contratos con promesa activa no se asignan",
-                "promise_excluded": len(promise_contract_ids),
-            }
 
             # Excluir promesas activas del proceso de asignacion
             excluded_from_assignment = blocked_contract_ids | promise_contract_ids
 
             # Franja Cobyser (31-60 dias, cedula impar) se asigna a Cobyser, no a
             # division: excluir esos contratos para no asignarlos por duplicado.
-            results['franja_cobyser_excluded_count'] = 0
-            if settings.FRANJA_COBYSER_ENABLED:
-                try:
-                    franja_odd = self.contract_service.get_franja_cobyser_odd_contracts(
-                        min_days=settings.FRANJA_COBYSER_MIN_DAYS,
-                        max_days=settings.FRANJA_COBYSER_MAX_DAYS,
-                        excluded_contract_ids=excluded_from_assignment or None,
-                    )
-                    franja_odd_ids = {int(c["contract_id"]) for c in franja_odd}
-                    if franja_odd_ids:
-                        logger.info(
-                            "Excluyendo %s contratos de franja Cobyser (cedula impar) de division",
-                            len(franja_odd_ids),
-                        )
-                        excluded_from_assignment = excluded_from_assignment | franja_odd_ids
-                    results['franja_cobyser_excluded_count'] = len(franja_odd_ids)
-                except Exception as franja_error:
-                    logger.warning(
-                        "No se pudo excluir la franja Cobyser de division: %s",
-                        franja_error,
-                    )
+            excluded_from_assignment = self._exclude_franja_cobyser(
+                excluded_from_assignment, results
+            )
 
             # 3. Obtener asignaciones actuales
             current_assignments = self.get_current_assignments()

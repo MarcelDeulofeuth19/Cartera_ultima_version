@@ -93,6 +93,61 @@ class HistoryService:
             "estado_actual": estado_actual,
         }
 
+    @staticmethod
+    def _apply_terminal_update(
+        record: ContractAdvisorHistory,
+        terminal_fields: Dict[str, Any],
+        fecha_actual: datetime,
+    ) -> None:
+        record.fecha_terminal = fecha_actual
+        record.tipo = terminal_fields["tipo"]
+        record.dpd_terminal = terminal_fields["dpd_terminal"]
+        record.dias_atraso_terminal = terminal_fields[
+            "dias_atraso_terminal"
+        ]
+        record.dpd_actual = terminal_fields["dpd_actual"]
+        record.estado_actual = terminal_fields["estado_actual"]
+
+        if record.dpd_inicial is None and terminal_fields["dpd_inicial"]:
+            record.dpd_inicial = terminal_fields["dpd_inicial"]
+        if (
+            record.dias_atraso_inicial is None
+            and terminal_fields["dias_atraso_inicial"] is not None
+        ):
+            record.dias_atraso_inicial = terminal_fields[
+                "dias_atraso_inicial"
+            ]
+
+    @staticmethod
+    def _build_terminal_history(
+        contract_id: int,
+        user_id: int,
+        terminal_fields: Dict[str, Any],
+        fecha_actual: datetime,
+    ) -> ContractAdvisorHistory:
+        # Fallback para contratos antiguos sin historial abierto.
+        dias_inicial = terminal_fields["dias_atraso_inicial"]
+        if dias_inicial is None:
+            dias_inicial = terminal_fields["dias_atraso_terminal"]
+
+        dpd_inicial = terminal_fields["dpd_inicial"]
+        if dpd_inicial is None:
+            dpd_inicial = get_dpd_range(dias_inicial)
+
+        return ContractAdvisorHistory(
+            user_id=user_id,
+            contract_id=contract_id,
+            fecha_inicial=fecha_actual,
+            fecha_terminal=fecha_actual,
+            tipo=terminal_fields["tipo"],
+            dpd_inicial=dpd_inicial,
+            dpd_terminal=terminal_fields["dpd_terminal"],
+            dpd_actual=terminal_fields["dpd_actual"],
+            dias_atraso_inicial=dias_inicial,
+            dias_atraso_terminal=terminal_fields["dias_atraso_terminal"],
+            estado_actual=terminal_fields["estado_actual"],
+        )
+
     def register_assignments(
         self,
         assignments: Dict[int, List[int]],
@@ -259,48 +314,11 @@ class HistoryService:
                 record = active_map.get((contract_id, user_id))
 
                 if record:
-                    record.fecha_terminal = fecha_actual
-                    record.tipo = terminal_fields["tipo"]
-                    record.dpd_terminal = terminal_fields["dpd_terminal"]
-                    record.dias_atraso_terminal = terminal_fields[
-                        "dias_atraso_terminal"
-                    ]
-                    record.dpd_actual = terminal_fields["dpd_actual"]
-                    record.estado_actual = terminal_fields["estado_actual"]
-
-                    if record.dpd_inicial is None and terminal_fields["dpd_inicial"]:
-                        record.dpd_inicial = terminal_fields["dpd_inicial"]
-                    if (
-                        record.dias_atraso_inicial is None
-                        and terminal_fields["dias_atraso_inicial"] is not None
-                    ):
-                        record.dias_atraso_inicial = terminal_fields[
-                            "dias_atraso_inicial"
-                        ]
-
+                    self._apply_terminal_update(record, terminal_fields, fecha_actual)
                     stats["updated"] += 1
                 else:
-                    # Fallback para contratos antiguos sin historial abierto.
-                    dias_inicial = terminal_fields["dias_atraso_inicial"]
-                    if dias_inicial is None:
-                        dias_inicial = terminal_fields["dias_atraso_terminal"]
-
-                    dpd_inicial = terminal_fields["dpd_inicial"]
-                    if dpd_inicial is None:
-                        dpd_inicial = get_dpd_range(dias_inicial)
-
-                    new_history = ContractAdvisorHistory(
-                        user_id=user_id,
-                        contract_id=contract_id,
-                        fecha_inicial=fecha_actual,
-                        fecha_terminal=fecha_actual,
-                        tipo=terminal_fields["tipo"],
-                        dpd_inicial=dpd_inicial,
-                        dpd_terminal=terminal_fields["dpd_terminal"],
-                        dpd_actual=terminal_fields["dpd_actual"],
-                        dias_atraso_inicial=dias_inicial,
-                        dias_atraso_terminal=terminal_fields["dias_atraso_terminal"],
-                        estado_actual=terminal_fields["estado_actual"],
+                    new_history = self._build_terminal_history(
+                        contract_id, user_id, terminal_fields, fecha_actual
                     )
                     self.postgres_session.add(new_history)
                     stats["inserted"] += 1
