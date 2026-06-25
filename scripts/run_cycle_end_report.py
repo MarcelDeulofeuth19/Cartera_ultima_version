@@ -16,6 +16,12 @@ Ejemplos:
     # Solo generar CSV, sin enviar
     python run_cycle_end_report.py --no-send
 """
+# --- bootstrap: ejecutable desde cualquier ruta (anade la raiz del repo al path) ---
+import sys as _sys, pathlib as _pathlib
+for _cand in (_pathlib.Path(__file__).resolve(), *_pathlib.Path(__file__).resolve().parents):
+    if (_cand / "app").is_dir() and (_cand / "main.py").exists():
+        _sys.path.insert(0, str(_cand)); break
+# --- fin bootstrap ---
 import argparse
 import calendar
 import logging

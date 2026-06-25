@@ -3,6 +3,12 @@ Script de verificación de integridad de contratos fijos manuales.
 Este script valida que las listas de contratos fijos no hayan sido modificadas.
 """
 
+# --- bootstrap: ejecutable desde cualquier ruta (anade la raiz del repo al path) ---
+import sys as _sys, pathlib as _pathlib
+for _cand in (_pathlib.Path(__file__).resolve(), *_pathlib.Path(__file__).resolve().parents):
+    if (_cand / "app").is_dir() and (_cand / "main.py").exists():
+        _sys.path.insert(0, str(_cand)); break
+# --- fin bootstrap ---
 from app.data.manual_fixed_contracts import (
     COBYSER_MANUAL_FIXED,
     SERLEFIN_MANUAL_FIXED,

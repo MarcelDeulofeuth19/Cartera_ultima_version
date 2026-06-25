@@ -1,4 +1,4 @@
-﻿"""
+"""
 Script de prueba para verificar la nueva lÃ³gica de bases fijas.
 Muestra los contratos que serÃ­an considerados fijos segÃºn los nuevos filtros.
 """

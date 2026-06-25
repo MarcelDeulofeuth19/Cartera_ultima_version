@@ -1,4 +1,10 @@
-﻿import json
+# --- bootstrap: ejecutable desde cualquier ruta (anade la raiz del repo al path) ---
+import sys as _sys, pathlib as _pathlib
+for _cand in (_pathlib.Path(__file__).resolve(), *_pathlib.Path(__file__).resolve().parents):
+    if (_cand / "app").is_dir() and (_cand / "main.py").exists():
+        _sys.path.insert(0, str(_cand)); break
+# --- fin bootstrap ---
+import json
 import time
 from app.database.connections import db_manager
 from app.services.assignment_service import AssignmentService

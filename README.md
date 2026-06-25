@@ -1,329 +1,283 @@
-# Sistema de Asignación de Contratos - FastAPI
+# Sistema de Asignación de Cartera
 
-API profesional para la asignación automática de contratos entre asesores, implementando lógica de contratos fijos, limpieza y balanceo 50/50.
+Servicio **FastAPI** que automatiza la asignación de la cartera en mora a las casas de cobranza
+(**Cobyser** y **Serlefín**) para los tres productos del negocio — **Phone**, **Twist 1.0** y
+**Twist 2.0** — y genera los informes operativos y de fin de ciclo.
 
-## 🚀 Características
-
-- **Arquitectura Monolito Modular**: Estructura profesional con separación de responsabilidades
-- **Singleton Pattern**: File lock para garantizar una única instancia en ejecución
-- **Dual Database**: Integración con MySQL (consultas) y PostgreSQL (escrituras)
-- **Contratos Fijos**: Priorización de contratos con effect='pago_total'
-- **Balanceo Inteligente**: Distribución 50/50 con manejo de números impares
-- **Transaccionalidad**: Commit/Rollback automático en todas las operaciones
-- **Reportes Automáticos**: Generación de archivos TXT y Excel
-- **Health Checks**: Monitoreo del estado de la aplicación y bases de datos
-
-## 📁 Estructura del Proyecto
-
-```
-.
-├── app/
-│   ├── core/                  # Configuración central
-│   │   ├── config.py          # Settings y credenciales
-│   │   └── file_lock.py       # Singleton pattern
-│   ├── database/              # Gestión de bases de datos
-│   │   ├── connections.py     # SQLAlchemy engines
-│   │   └── models.py          # Modelos ORM
-│   ├── services/              # Lógica de negocio
-│   │   ├── contract_service.py       # Consultas de contratos
-│   │   ├── assignment_service.py     # Lógica de asignación
-│   │   └── report_service.py         # Generación de reportes
-│   └── api/
-│       └── routes/
-│           └── assignment.py  # Endpoints FastAPI
-├── reports/                   # Directorio de reportes generados
-├── main.py                    # Punto de entrada de la aplicación
-├── requirements.txt           # Dependencias
-├── .env.example              # Plantilla de variables de entorno
-└── README.md                 # Este archivo
-```
-
-## 🛠️ Instalación
-
-### 1. Clonar o descargar el proyecto
-
-```bash
-cd "C:\Users\Alo User\Desktop\CODIGOS_ALO\Nuevo aplicativo Cartera"
-```
-
-### 2. Crear entorno virtual (recomendado)
-
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. Instalar dependencias
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configurar variables de entorno
-
-Copia `.env.example` a `.env` y ajusta las credenciales si es necesario:
-
-```bash
-copy .env.example .env
-```
-
-Las credenciales ya están preconfiguradas para:
-- **MySQL**: alocreditprod en 57.130.40.1
-- **PostgreSQL**: nexus_db en 3.95.195.63
-
-## 🚀 Ejecución
-
-### Modo Development (con auto-reload)
-
-```bash
-python main.py
-```
-
-### Modo Production (con Uvicorn)
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-La API estará disponible en: **http://localhost:8000**
-
-## 📚 Documentación de la API
-
-Una vez iniciada la aplicación, accede a:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-## 🔌 Endpoints Disponibles
-
-### 1. Ejecutar Proceso de Asignación
-
-**POST** `/api/v1/run-assignment`
-
-Ejecuta el proceso completo de asignación de contratos.
-
-**Response Example:**
-```json
-{
-  "success": true,
-  "message": "Proceso de asignación completado exitosamente",
-  "execution_time": 12.45,
-  "results": {
-    "fixed_contracts_count": {
-      "user_45": 15,
-      "user_81": 18
-    },
-    "contracts_processed": 250,
-    "clean_stats": {
-      "deleted_user_45": 30,
-      "deleted_user_81": 28,
-      "protected_fixed": 33
-    },
-    "balance_stats": {
-      "45": 125,
-      "81": 125
-    }
-  },
-  "reports": {
-    "user_45": "reports/asignacion_45.txt",
-    "user_81": "reports/asignacion_81.txt",
-    "excel_fixed": "reports/reporte_fijos_efect.xlsx"
-  }
-}
-```
-
-### 2. Verificar Estado del Lock
-
-**GET** `/api/v1/lock-status`
-
-Consulta si hay una instancia del proceso en ejecución.
-
-### 3. Health Check
-
-**GET** `/api/v1/health`
-
-Verifica el estado de la API y las conexiones de bases de datos.
-
-## 📊 Reportes Generados
-
-Cada ejecución genera 3 archivos en el directorio `reports/`:
-
-1. **asignacion_45.txt**: IDs de contratos asignados al usuario 45
-2. **asignacion_81.txt**: IDs de contratos asignados al usuario 81
-3. **reporte_fijos_efect.xlsx**: Excel detallado con contratos fijos
-   - Hoja "Contratos Fijos": Detalle completo
-   - Hoja "Resumen": Totales por usuario
-   - Hoja "Metadata": Información de generación
-
-## 🔒 Lógica de Negocio
-
-### Contratos Fijos
-
-Los contratos son considerados FIJOS si cumplen:
-- `effect = 'pago_total'` en la tabla `managements`
-- Asignados a usuarios 45 o 81
-
-**Reglas:**
-- Los contratos fijos **NUNCA** se eliminan
-- Si un contrato fijo no está asignado, se asigna prioritariamente
-
-### Limpieza de Asignaciones
-
-Se eliminan de `contract_advisors`:
-- Contratos con **0-60 días** de atraso
-- De usuarios 45 y 81
-- **EXCEPTO** los contratos fijos
-
-### Asignación y Balanceo
-
-Se asignan contratos con **>= 61 días** de atraso:
-
-1. **Prioridad alta**: Contratos fijos no asignados
-2. **Balanceo 50/50**: Distribución equitativa
-3. **Números impares**: Alternancia para mantener equilibrio
-
-## 🔄 Flujo de Ejecución
-
-```
-1. Adquirir File Lock (Singleton)
-   ↓
-2. Conectar a MySQL y PostgreSQL
-   ↓
-3. Consultar contratos fijos (managements)
-   ↓
-4. Consultar asignaciones actuales (contract_advisors)
-   ↓
-5. Obtener contratos con >= 61 días (MySQL)
-   ↓
-6. Limpieza: DELETE contratos 0-60 días (excepto fijos)
-   ↓
-7. Balanceo: Asignar contratos 50/50
-   ↓
-8. INSERT nuevas asignaciones (contract_advisors)
-   ↓
-9. Generar reportes TXT y Excel
-   ↓
-10. Liberar Lock
-```
-
-## ⚙️ Configuración Avanzada
-
-### Modificar Parámetros de Negocio
-
-Edita el archivo `.env`:
-
-```env
-# Cambiar días mínimos de atraso
-DAYS_THRESHOLD=61
-
-# Cambiar effect para contratos fijos
-FIXED_CONTRACT_EFFECT=pago_total
-
-# Cambiar directorio de reportes
-REPORTS_DIR=reports
-```
-
-### Modificar Usuarios
-
-Edita `app/core/config.py`:
-
-```python
-USER_IDS: List[int] = [45, 81]  # Cambiar IDs de usuarios
-```
-
-## 🐛 Troubleshooting
-
-### Error: "Process already running"
-
-Otra instancia está en ejecución. Verifica con:
-
-```bash
-GET /api/v1/lock-status
-```
-
-Si el proceso está bloqueado, elimina manualmente:
-
-```bash
-del assignment_process.lock
-```
-
-### Error de conexión a bases de datos
-
-Verifica las credenciales en `.env` y la conectividad de red:
-
-```bash
-GET /api/v1/health
-```
-
-### Logs de ejecución
-
-Los logs se guardan en:
-- **Console**: STDOUT
-- **Archivo**: `assignment_process.log`
-
-## 🧪 Testing Manual
-
-Usa curl o Postman:
-
-```bash
-# Ejecutar asignación
-curl -X POST http://localhost:8000/api/v1/run-assignment
-
-# Ver estado del lock
-curl http://localhost:8000/api/v1/lock-status
-
-# Health check
-curl http://localhost:8000/api/v1/health
-```
-
-## 📝 Notas Técnicas
-
-- **SQLAlchemy**: ORM para modelos de PostgreSQL
-- **Raw SQL**: Queries directas para MySQL (solo lectura)
-- **File Lock**: `filelock` library para garantizar singleton
-- **Pandas + OpenPyXL**: Generación de reportes Excel
-- **Context Managers**: Gestión automática de sesiones y transacciones
-
-## 👨‍💻 Desarrollo
-
-Para activar modo debug, edita `.env`:
-
-```env
-DEBUG=True
-```
-
-Esto habilitará:
-- Auto-reload en cambios de código
-- Logs detallados de queries SQL
-- Stack traces completos
-
-## 📦 Dependencias Principales
-
-- **FastAPI**: Framework web moderno
-- **SQLAlchemy**: ORM y gestión de bases de datos
-- **Pydantic**: Validación de datos
-- **Pandas**: Generación de reportes
-- **Filelock**: Singleton pattern
-
-## 🔐 Seguridad
-
-⚠️ **IMPORTANTE**: Este código contiene credenciales de bases de datos. En producción:
-
-1. Usa variables de entorno del sistema
-2. Implementa secrets management (AWS Secrets Manager, Azure Key Vault)
-3. No commitees el archivo `.env` al repositorio
-4. Restringe acceso a los endpoints con autenticación
-
-## 📞 Soporte
-
-Para preguntas o problemas, consulta los logs en:
-- `assignment_process.log`
-- Console output
+> API firmada con **HMAC**, ejecución programada (scheduler), informes en Excel/CSV por correo y
+> despliegue en **Docker**.
 
 ---
 
-**Versión**: 1.0.0  
-**Autor**: Senior Backend Developer  
-**Stack**: Python 3.11+ | FastAPI | SQLAlchemy | MySQL | PostgreSQL#   C a s a _ C o b r a n z a  
- #   C a s a _ C o b r a n z a  
- 
+## Tabla de contenidos
+
+- [Descripción general](#descripción-general)
+- [Características](#características)
+- [Arquitectura](#arquitectura)
+- [Productos y reglas de asignación](#productos-y-reglas-de-asignación)
+- [Estructura del proyecto](#estructura-del-proyecto)
+- [Requisitos](#requisitos)
+- [Configuración (`.env`)](#configuración-env)
+- [Puesta en marcha](#puesta-en-marcha)
+- [API](#api)
+- [Informes](#informes)
+- [Tareas programadas](#tareas-programadas)
+- [Pruebas](#pruebas)
+- [Scripts operativos](#scripts-operativos)
+- [Documentación](#documentación)
+- [Calidad de código (SonarQube)](#calidad-de-código-sonarqube)
+- [Seguridad](#seguridad)
+
+---
+
+## Descripción general
+
+El sistema toma los contratos en mora desde las bases de origen, aplica las **reglas de negocio de
+asignación** (franjas de mora, reparto por casa, cédulas impares, exclusión de pagarés) y persiste el
+resultado en las tablas de asesores de cada producto. Sobre esa asignación produce los **informes**
+que se envían automáticamente a cada casa de cobranza y el **informe mensual de fin de ciclo**.
+
+La asignación es **append-only**: nunca reasigna un contrato ya asignado; los contratos que "se mueven"
+de franja con el tiempo (drift de mora) conservan su asignación original.
+
+## Características
+
+- 🧩 **Tres productos** en un mismo motor: Phone, Twist 1.0 y Twist 2.0, cada uno en su tabla.
+- ⚖️ **Reglas de reparto** configurables: franja 31‑60 (solo Cobyser, cédulas impares), 61‑240 con
+  reparto **40/60** Cobyser/Serlefín por bucket DPD.
+- 🚫 **Exclusiones de negocio**: contratos endosados a pagaré y cartera al día (`<31`).
+- 📊 **Informes** por producto (una hoja por producto) con paridad financiera total.
+- 📧 **Envío automático** por correo a cada casa + informe de **fin de ciclo** mensual.
+- 🔐 **API firmada con HMAC** (servidor‑a‑servidor).
+- ⏰ **Scheduler** integrado (asignación diaria, notificaciones, cierre de mes).
+- 🐳 **Docker / docker‑compose** listo para producción.
+
+## Arquitectura
+
+```mermaid
+flowchart LR
+    subgraph Fuentes[Fuentes de datos]
+      MY[(MySQL alocreditprod\nPhone + tablas twist_)]
+      CBS[(PostgreSQL CBS\ncore credito / DPD)]
+      PDS[(PostgreSQL PDS\ndatos cliente)]
+    end
+    subgraph App[FastAPI: Sistema de Asignacion]
+      ASG[Motor de asignacion]
+      REP[Servicios de informes]
+      SCH[Scheduler]
+      API[API HMAC]
+    end
+    PG[(PostgreSQL nexus_db\nschema alocreditindicators\ncontract_advisors*, history)]
+    ICDB[(internal-config-db\nconfig dinamica / auditoria)]
+
+    MY --> ASG
+    CBS --> ASG
+    PDS --> ASG
+    ASG --> PG
+    PG --> REP
+    REP --> Correo((SMTP))
+    API --> ASG
+    API --> REP
+    SCH --> ASG
+    SCH --> REP
+    App --- ICDB
+```
+
+| Origen | Uso |
+|---|---|
+| **MySQL `alocreditprod`** | Cartera **Phone** y **Twist 1.0** (tablas `twist_*`). |
+| **PostgreSQL CBS** (`:5434`) | Núcleo de crédito y días de mora (DPD) de **Twist 2.0**. |
+| **PostgreSQL PDS** (`:5435`) | Datos de cliente de **Twist 2.0** (cédula, contacto). |
+| **PostgreSQL `nexus_db`** (schema `alocreditindicators`) | Asignaciones e historial: `contract_advisors`, `contract_advisors_twist`, `contract_advisors_twist2`, `contract_advisors_history`. |
+| **internal-config-db** (contenedor) | Configuración dinámica del panel y auditoría. |
+
+## Productos y reglas de asignación
+
+| Producto | Tabla de asignación | Fuente |
+|---|---|---|
+| **Phone** | `contract_advisors` | MySQL `alocreditprod` |
+| **Twist 1.0** | `contract_advisors_twist` | MySQL `alocreditprod` (`twist_*`) |
+| **Twist 2.0** | `contract_advisors_twist2` | PostgreSQL CBS + PDS |
+
+**Reglas (idénticas para los tres productos):**
+
+1. **Franja 31‑60** (`31_45` y `46_60`): se asigna **solo a Cobyser** y **solo cédulas impares**
+   (terminadas en 1, 3, 5, 7, 9). Serlefín 0 %. Tipo `CEDULAS_IMPAR`.
+2. **61‑240**: reparto **40 % Cobyser / 60 % Serlefín** por bucket DPD. Tipo `ASIGNACION`.
+3. **Exclusión de pagarés**: se excluyen los contratos endosados a afianzadora
+   (`pagare_status_id ∈ {1 Libraval, 2 Fianzavasa, 3 Figarantías}`), tanto en la asignación como en los informes.
+4. **Cartera al día**: la mora `<31` no entra en los informes de Twist.
+
+Estas reglas se configuran por entorno (ver [Configuración](#configuración-env)).
+
+## Estructura del proyecto
+
+```
+.
+├── app/                       # Aplicación (FastAPI)
+│   ├── api/routes/            # Endpoints: assignment, collection_agency, reports
+│   ├── core/                  # config (settings), dpd, seguridad HMAC
+│   ├── database/              # conexiones y modelos SQLAlchemy
+│   ├── services/              # motor de asignación, informes, scheduler, etc.
+│   ├── runtime_config/        # configuración dinámica (DB interna) y auditoría
+│   └── data/                  # datos inmutables (listas de contratos fijos)
+├── tests/                     # Suite de pruebas (pytest): unit / integration / e2e
+├── migrations/                # Migraciones de base de datos
+├── scripts/                   # Scripts operativos (ver sección Scripts)
+│   ├── checks/                # Diagnósticos y verificaciones manuales
+│   ├── examples/              # Ejemplo de cliente HMAC
+│   └── windows/               # .bat de apoyo (Windows)
+├── docs/                      # Documentación detallada por tema
+├── main.py                    # Punto de entrada (uvicorn main:app)
+├── Dockerfile / docker-compose.yml
+├── requirements.txt / requirements-dev.txt / pyproject.toml
+└── sonar-project.properties   # Configuración de análisis SonarQube
+```
+
+## Requisitos
+
+- **Python 3.10+** (probado en 3.10–3.12)
+- **Docker** y **docker compose** (despliegue recomendado)
+- Acceso de red a las bases MySQL/PostgreSQL de origen y a SMTP
+
+## Configuración (`.env`)
+
+La configuración se hace por **variables de entorno** (pydantic‑settings). Parte de
+[`.env.example`](.env.example), que contiene **placeholders** (sin secretos):
+
+```bash
+cp .env.example .env
+# edita .env con los valores reales del entorno
+```
+
+> 🔒 Los **secretos nunca van en archivos versionados**. En `docker-compose.yml` las contraseñas se
+> inyectan con `${VAR}` desde el `.env` no versionado; en `.env.example` quedan vacías.
+
+Variables principales: conexiones `MYSQL_*`, `POSTGRES_*`, `CBS_DB_*`, `PDS_DB_*`, `REPORTS_EXT_*`;
+`SMTP_*` para correo; `API_HMAC_SECRET` para la firma; listas `COBYSER_USERS` / `SERLEFIN_USERS`;
+y los flags de reglas (`FRANJA_COBYSER_*`, `PAGARE_EXCLUDE_*`, `DEFAULT_*_PERCENT`).
+
+## Puesta en marcha
+
+### Docker (recomendado)
+
+```bash
+docker compose up -d --build
+docker compose ps           # health del contenedor
+docker compose logs -f fastapi-app
+```
+
+La API queda en `http://localhost:8000` y la documentación interactiva en `http://localhost:8000/docs`.
+
+### Local (desarrollo)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+uvicorn main:app --reload --port 8000
+```
+
+## API
+
+Todos los routers están protegidos con **firma HMAC**. Cada petición debe incluir la cabecera
+`X-Signature`:
+
+```
+X-Signature = HMAC_SHA256(API_HMAC_SECRET, method + path + body)
+```
+
+donde `path` **no** incluye la query string. Hay un cliente de ejemplo en
+[`scripts/examples/hmac_client_example.py`](scripts/examples/hmac_client_example.py).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET`  | `/` · `/api/v1/health` | Estado del servicio |
+| `POST` | `/api/v1/run-assignment` | Ejecuta el proceso de asignación |
+| `POST` | `/api/v1/run-division` | Ejecuta la división de contratos |
+| `POST` | `/api/v1/finalize-assignments` | Finaliza asignaciones |
+| `POST` | `/api/v1/process-manual-fixed` | Procesa contratos fijos manuales |
+| `GET`  | `/api/v1/lock-status` | Estado del lock del proceso |
+| `GET`  | `/api/v1/reports/download/{house_key}` | Descarga el informe de una casa. Soporta `?format=json&product=all\|phone\|twist1\|twist2` |
+| `GET`  | `/api/v1/reports/assignments/current` | Asignaciones actuales y estadísticas (incluye Twist1/Twist2) |
+| `POST` | `/informe-casa-cobranza` · `GET /listar-informes` · `GET /descargar-informe/{tipo}` | Informes para casa de cobranza |
+
+> La lista completa y actualizada de endpoints está siempre en `http://localhost:8000/docs` (OpenAPI).
+
+## Informes
+
+- **Por producto**: cada informe trae una **hoja por producto** (Phone / Twist1 / Twist2) y una
+  columna `producto`, con **paridad financiera** (mismos descuentos y opciones de pago que Phone).
+- **Día inicial**: el campo de día inicial sale de `contract_advisors_history.dias_atraso_inicial`.
+- **Twist 2.0**: la `llave` y `contrato_x` usan el **external_id numérico** con formato `TWIST2_<id>`.
+- **Envío**: automático por correo a Cobyser y Serlefín, y **informe mensual de fin de ciclo**.
+
+## Tareas programadas
+
+El scheduler integrado ejecuta (configurable por `.env`):
+
+- **Asignación automática** (diaria).
+- **Notificaciones** por correo a las casas en los días configurados.
+- **Informe de fin de ciclo** + **cierre mensual** el último día del mes.
+
+## Pruebas
+
+```bash
+pytest                      # suite completa
+pytest -m unit              # solo unitarias (sin BD ni red)
+pytest --cov=app --cov-report=term-missing
+```
+
+Marcadores disponibles: `unit`, `integration`, `e2e` (ver `pyproject.toml`).
+
+## Scripts operativos
+
+Todos viven en [`scripts/`](scripts/) y son **ejecutables desde cualquier ruta** (incluyen un
+bootstrap que añade la raíz del repo al `PYTHONPATH`):
+
+| Script | Función |
+|---|---|
+| `scripts/run_assignment_once.py` | Ejecuta una corrida de asignación |
+| `scripts/run_assignment_debug.py` | Corrida de asignación con trazas |
+| `scripts/run_division.py` | Ejecuta la división de contratos |
+| `scripts/run_cycle_end_report.py` | Genera/envía el informe de fin de ciclo |
+| `scripts/generate_and_send_reports.py` | Genera y envía los informes a las casas |
+| `scripts/reset_assignments.py` | Reinicia asignaciones (operación delicada) |
+| `scripts/insert_fixed_contracts.py` | Inserta contratos fijos |
+| `scripts/checks/` | Diagnósticos y verificaciones manuales (conexiones, esquema, duplicados, etc.) |
+| `scripts/examples/hmac_client_example.py` | Cliente de ejemplo para consumir la API firmada |
+
+```bash
+python scripts/run_assignment_once.py        # funciona desde la raíz o desde cualquier carpeta
+```
+
+## Documentación
+
+Documentación temática en [`docs/`](docs/):
+
+| Documento | Tema |
+|---|---|
+| [`docs/GUIA_RAPIDA.md`](docs/GUIA_RAPIDA.md) | Guía rápida de uso |
+| [`docs/DOCKER_README.md`](docs/DOCKER_README.md) | Despliegue con Docker |
+| [`docs/SISTEMA_INFORMES_README.md`](docs/SISTEMA_INFORMES_README.md) | Sistema de informes |
+| [`docs/BASES_FIJAS.md`](docs/BASES_FIJAS.md) · [`docs/MIGRACION_BASES_FIJAS.md`](docs/MIGRACION_BASES_FIJAS.md) | Contratos fijos y su migración |
+| [`docs/BALANCE_EQUITATIVO_README.md`](docs/BALANCE_EQUITATIVO_README.md) | Balance equitativo del reparto |
+| [`docs/DIVISION_CONTRATOS.md`](docs/DIVISION_CONTRATOS.md) | División de contratos |
+| [`docs/jira.md`](docs/jira.md) | Bitácora / changelog de cambios |
+
+## Calidad de código (SonarQube)
+
+El análisis se configura en [`sonar-project.properties`](sonar-project.properties)
+(projectKey `cartera-asignacion-api`). Para correrlo:
+
+```bash
+pytest --cov=app --cov-report=xml          # genera coverage.xml
+sonar-scanner -Dsonar.host.url=<url> -Dsonar.login=<token>
+```
+
+## Seguridad
+
+- **Secretos fuera del control de versiones**: `.env` (gitignored) es la única fuente; el
+  `docker-compose.yml` los inyecta con `${VAR}` y `.env.example` solo tiene placeholders.
+- **API firmada con HMAC** en todos los endpoints.
+- Si alguna credencial llegó a versionarse en el historial de git, **rótala** y consérvala únicamente
+  fuera del repositorio (gestor de secretos / variables de CI).

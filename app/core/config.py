@@ -80,6 +80,24 @@ class Settings(BaseSettings):
     PAGARE_EXCLUDE_ENABLED: bool = True
     PAGARE_EXCLUDED_STATUS_IDS: str = "1,2,3"
 
+    # Usuario principal de cada casa para el reparto 40/60.
+    # (Cobyser usa FRANJA_COBYSER_USER_ID; aquí el principal de Serlefín.)
+    SERLEFIN_PRIMARY_USER_ID: int = 81
+
+    # Estados de contrato EXCLUIDOS del proceso (anulado/fraude). Aplican a Phone y Twist.
+    EXCLUDED_CONTRACT_STATUS_IDS: str = "5,7"
+    # Estado de pago "Atrasado" (cartera en mora) por producto.
+    PHONE_ARREARS_PAYMENT_STATUS_ID: int = 4
+    TWIST_ARREARS_PAYMENT_STATUS_ID: int = 3
+
+    # --- Caché Redis (opcional; degradación elegante si no está disponible) ---
+    REDIS_ENABLED: bool = True
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: str = ""
+    CACHE_ASSIGNMENTS_TTL_SECONDS: int = 86400  # 24 h (caché diario)
+
     # Efectos que determinan contratos fijos
     EFFECT_ACUERDO_PAGO: str = "acuerdo_de_pago"
     EFFECT_PAGO_TOTAL: str = "pago_total"
@@ -254,6 +272,22 @@ class Settings(BaseSettings):
             if raw.isdigit() and int(raw) not in out:
                 out.append(int(raw))
         return out
+
+    @property
+    def excluded_contract_status_id_list(self) -> List[int]:
+        """Estados de contrato excluidos del proceso (anulado/fraude)."""
+        out: List[int] = []
+        for raw in str(self.EXCLUDED_CONTRACT_STATUS_IDS or "").split(","):
+            raw = raw.strip()
+            if raw.isdigit() and int(raw) not in out:
+                out.append(int(raw))
+        return out
+
+    @property
+    def redis_url(self) -> str:
+        """URL de conexión a Redis (incluye password si está definido)."""
+        auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     @staticmethod
     def _parse_recipients(raw_value: str) -> List[str]:

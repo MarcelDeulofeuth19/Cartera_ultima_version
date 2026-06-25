@@ -133,32 +133,32 @@ async def get_current_assignments():
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    import json
     from app.database.connections import db_manager
     from app.services.assignment_service import AssignmentService
-    
-    # Obtener la fecha actual en Bogota, Colombia
+    from app.core.cache import cache
+
+    # Fecha actual en Bogotá (Colombia) para el caché diario.
     tz_bogota = ZoneInfo("America/Bogota")
     today_str = datetime.now(tz_bogota).strftime("%Y-%m-%d")
-    
-    # El archivo se guardara en la raiz del proyecto
-    # v2: incluye conteo de Twist1/Twist2 (invalida cache viejo sin Twist).
-    cache_filename = f"asignaciones_cache_v2_{today_str}.json"
-    cache_path = Path(cache_filename)
-    
-    # Si el archivo de hoy ya existe, servirlo (evita la consulta a DB)
-    if cache_path.exists():
-        logger.info(f"Sirviendo asignaciones desde caché: {cache_path}")
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data
-        except Exception as e:
-            logger.error(f"Error leyendo caché: {e}")
-            # Si falla leerlo, continuar para recrearlo
 
-    logger.info("Caché no encontrado para hoy. Consultando la base de datos por primera vez...")
-    
+    # Caché diario en Redis (v2: incluye Twist1/Twist2). Degradación elegante:
+    # si Redis no está disponible, se consulta la BD sin romper la respuesta.
+    cache_key = f"assignments:current:v2:{today_str}"
+    cached = cache.get_json(cache_key)
+    if cached is not None:
+        logger.info("Sirviendo asignaciones desde caché Redis: %s", cache_key)
+        return cached
+
+    logger.info("Caché no encontrado para hoy. Consultando la base de datos...")
+
+    # Usuarios principales por casa (sin hardcodear): Cobyser y Serlefín.
+    house_user_ids = list(settings.USER_IDS) or [
+        settings.FRANJA_COBYSER_USER_ID, settings.SERLEFIN_PRIMARY_USER_ID
+    ]
+    cobyser_id = str(settings.FRANJA_COBYSER_USER_ID)
+    serlefin_id = str(settings.SERLEFIN_PRIMARY_USER_ID)
+    ids_csv = ", ".join(str(int(u)) for u in house_user_ids)
+
     with db_manager.get_postgres_session() as postgres_session:
         from sqlalchemy import text
 
@@ -171,12 +171,12 @@ async def get_current_assignments():
             for user_id, contracts in assignments.items()
         }
 
-        # NUEVO: conteo Twist1/Twist2 por casa (45/81), aditivo.
+        # Conteo Twist1/Twist2 por casa, aditivo.
         def _twist_counts(table: str) -> dict:
             try:
                 rows = postgres_session.execute(text(
                     f"SELECT user_id, COUNT(*) FROM alocreditindicators.{table} "
-                    f"WHERE user_id IN (45, 81) GROUP BY user_id"
+                    f"WHERE user_id IN ({ids_csv}) GROUP BY user_id"
                 )).fetchall()
                 return {str(int(u)): int(n) for u, n in rows}
             except Exception as twist_err:
@@ -186,18 +186,18 @@ async def get_current_assignments():
         twist1 = _twist_counts("contract_advisors_twist")
         twist2 = _twist_counts("contract_advisors_twist2")
 
-        ph_45, ph_81 = len(result.get("45", [])), len(result.get("81", []))
-        t1_45, t1_81 = twist1.get("45", 0), twist1.get("81", 0)
-        t2_45, t2_81 = twist2.get("45", 0), twist2.get("81", 0)
+        ph_c, ph_s = len(result.get(cobyser_id, [])), len(result.get(serlefin_id, []))
+        t1_c, t1_s = twist1.get(cobyser_id, 0), twist1.get(serlefin_id, 0)
+        t2_c, t2_s = twist2.get(cobyser_id, 0), twist2.get(serlefin_id, 0)
 
         resumen = {
-            "phone": {"cobyser": ph_45, "serlefin": ph_81, "total": ph_45 + ph_81},
-            "twist1": {"cobyser": t1_45, "serlefin": t1_81, "total": t1_45 + t1_81},
-            "twist2": {"cobyser": t2_45, "serlefin": t2_81, "total": t2_45 + t2_81},
+            "phone": {"cobyser": ph_c, "serlefin": ph_s, "total": ph_c + ph_s},
+            "twist1": {"cobyser": t1_c, "serlefin": t1_s, "total": t1_c + t1_s},
+            "twist2": {"cobyser": t2_c, "serlefin": t2_s, "total": t2_c + t2_s},
             "total": {
-                "cobyser": ph_45 + t1_45 + t2_45,
-                "serlefin": ph_81 + t1_81 + t2_81,
-                "total": ph_45 + ph_81 + t1_45 + t1_81 + t2_45 + t2_81,
+                "cobyser": ph_c + t1_c + t2_c,
+                "serlefin": ph_s + t1_s + t2_s,
+                "total": ph_c + ph_s + t1_c + t1_s + t2_c + t2_s,
             },
         }
 
@@ -205,17 +205,11 @@ async def get_current_assignments():
             "success": True,
             "date": today_str,
             "data": result,            # Phone (compatibilidad, sin cambios)
-            "twist1": twist1,           # NUEVO
-            "twist2": twist2,           # NUEVO
-            "resumen": resumen,         # NUEVO: conteo combinado por casa/producto
+            "twist1": twist1,
+            "twist2": twist2,
+            "resumen": resumen,         # conteo combinado por casa/producto
         }
-        
-        # Guardar en disco para futuras consultas hoy
-        try:
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            logger.info(f"Caché diario guardado exitosamente en: {cache_path}")
-        except Exception as e:
-            logger.error(f"Error guardando caché: {e}")
-            
+
+        # Guardar en Redis para futuras consultas del día (no-op si Redis no está).
+        cache.set_json(cache_key, payload, ttl_seconds=settings.CACHE_ASSIGNMENTS_TTL_SECONDS)
         return payload

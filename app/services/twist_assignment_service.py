@@ -32,8 +32,9 @@ from app.services.assignment_service import AssignmentService
 
 logger = logging.getLogger(__name__)
 
-SERLEFIN_USER = 81
-COBYSER_USER = 45
+# Usuarios principales por casa para el reparto (desde configuración, sin hardcodear).
+SERLEFIN_USER = settings.SERLEFIN_PRIMARY_USER_ID
+COBYSER_USER = settings.FRANJA_COBYSER_USER_ID
 
 
 class TwistAssignmentService:

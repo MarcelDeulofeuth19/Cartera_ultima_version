@@ -25,6 +25,27 @@ services:
     networks:
       - app-network
 
+  # ==========================================
+  # Cache Redis (informacion de asignaciones)
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: asignacion-redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    # Sin publicar al host: la app lo alcanza por la red interna (redis:6379).
+    expose:
+      - "6379"
+    volumes:
+      - ./docker-data/redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
   # ================================
   # Servicio Principal: API FastAPI
   # ================================
@@ -119,6 +140,12 @@ services:
       - DEFAULT_ASSIGNMENT_MAX_DAYS=240
       - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
       - API_HMAC_SECRET=${API_HMAC_SECRET}
+      # Cache Redis
+      - REDIS_ENABLED=True
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CACHE_ASSIGNMENTS_TTL_SECONDS=86400
       # Rutas
       - REPORTS_DIR=/app/reports
       - LOCK_FILE=assignment_process.lock
@@ -131,6 +158,8 @@ services:
 
     depends_on:
       internal-config-db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
     restart: unless-stopped

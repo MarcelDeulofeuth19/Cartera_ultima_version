@@ -60,6 +60,7 @@ Thumbs.db
 *.sqlite3
 
 # Docker persistent data (mantener solo estructura)
+docker-data/redis/
 docker-data/internal-config-db/*
 !docker-data/internal-config-db/.gitkeep
 
@@ -74,5 +75,18 @@ htmlcov/
 # Entornos virtuales temporales de pruebas
 .venv_test/
 
-# Ejemplo con secreto embebido (NO versionar; rotar y eliminar)
-hmac_client_example.py
+# Editor / agente local
+.claude/
+
+# Artefactos de runtime (no versionar)
+*.pid
+*.jobid
+asignaciones_cache_*.json
+
+# Llaves / credenciales: NUNCA versionar (rotar las ya filtradas)
+github_actions_autogestion
+github_actions_autogestion.pub
+*.pem
+id_rsa
+id_ed25519
+reports/manual_twist/

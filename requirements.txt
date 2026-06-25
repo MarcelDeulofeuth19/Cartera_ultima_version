@@ -9,6 +9,9 @@ sqlalchemy==2.0.25
 pymysql==1.1.0
 psycopg2-binary==2.9.9
 
+# Cache
+redis==5.0.1
+
 # Utilidades
 filelock==3.13.1
 python-multipart==0.0.6

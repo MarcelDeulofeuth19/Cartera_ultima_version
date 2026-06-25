@@ -13,6 +13,11 @@ from app.core.dpd import is_cedula_impar
 
 logger = logging.getLogger(__name__)
 
+# Constantes de negocio derivadas de configuración (evita números mágicos en SQL).
+_EXCLUDED_STATUS_CSV = ", ".join(str(i) for i in settings.excluded_contract_status_id_list)
+_PHONE_ARREARS_STATUS = settings.PHONE_ARREARS_PAYMENT_STATUS_ID
+_TWIST_ARREARS_STATUS = settings.TWIST_ARREARS_PAYMENT_STATUS_ID
+
 
 class ContractService:
     """Servicio para consultar contratos con atraso desde MySQL."""
@@ -207,8 +212,8 @@ class ContractService:
         INNER JOIN contract c ON c.id = ca.contract_id
         WHERE ca.expiration_date < CURDATE()
           AND ca.outstanding_principal > 0
-          AND ca.contract_amortization_payment_status_id = 4
-          AND c.contracts_status_id NOT IN (5, 7)
+          AND ca.contract_amortization_payment_status_id = {_PHONE_ARREARS_STATUS}
+          AND c.contracts_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
         {exclusion_clause}{pagare_clause}
         GROUP BY ca.contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
@@ -454,8 +459,8 @@ class ContractService:
         INNER JOIN twist_contract c ON c.id = ca.twist_contract_id
         WHERE ca.expiration_date < CURDATE()
           AND ca.outstanding_principal > 0
-          AND ca.twist_contract_payment_status_id = 3
-          AND c.twist_contract_status_id NOT IN (5, 7)
+          AND ca.twist_contract_payment_status_id = {_TWIST_ARREARS_STATUS}
+          AND c.twist_contract_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
         {exclusion_clause}{pagare_clause}
         GROUP BY ca.twist_contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
@@ -565,8 +570,8 @@ class ContractService:
         INNER JOIN contract c ON c.id = ca.contract_id
         WHERE ca.expiration_date < CURDATE()
           AND ca.outstanding_principal > 0
-          AND ca.contract_amortization_payment_status_id = 4
-          AND c.contracts_status_id NOT IN (5, 7)
+          AND ca.contract_amortization_payment_status_id = {_PHONE_ARREARS_STATUS}
+          AND c.contracts_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
         GROUP BY ca.contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}
         """
@@ -622,8 +627,8 @@ class ContractService:
                 WHERE ca.contract_id IN ({batch_ids})
                   AND ca.expiration_date <= CURDATE()
                   AND ca.outstanding_principal > 0
-                  AND ca.contract_amortization_payment_status_id = 4
-                  AND c.contracts_status_id NOT IN (5, 7)
+                  AND ca.contract_amortization_payment_status_id = {_PHONE_ARREARS_STATUS}
+                  AND c.contracts_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
                 GROUP BY ca.contract_id
                 """
 
@@ -677,8 +682,8 @@ class ContractService:
                 WHERE ca.contract_id IN ({batch_ids})
                   AND ca.expiration_date <= CURDATE()
                   AND ca.outstanding_principal > 0
-                  AND ca.contract_amortization_payment_status_id = 4
-                  AND c.contracts_status_id NOT IN (5, 7)
+                  AND ca.contract_amortization_payment_status_id = {_PHONE_ARREARS_STATUS}
+                  AND c.contracts_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
                 GROUP BY ca.contract_id
                 """
 
