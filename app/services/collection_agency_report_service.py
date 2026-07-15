@@ -1,6 +1,6 @@
 ﻿"""
 Servicio para generar informes de casa de cobranza (SERLEFIN y COBYSER)
-Mantiene la lÃ³gica original exacta del script
+Mantiene la lógica original exacta del script
 """
 import logging
 import os
@@ -23,7 +23,7 @@ class CollectionAgencyReportService:
         self.postgres_session = postgres_session
         self.mysql_session = mysql_session
         
-        # ConfiguraciÃ³n de bases de datos (exacta del script original)
+        # Configuración de bases de datos (exacta del script original)
         self.DB_CONFIG_PROD = {
             'host': settings.REPORTS_EXT_PROD_HOST,
             'user': settings.REPORTS_EXT_PROD_USER,
@@ -45,7 +45,7 @@ class CollectionAgencyReportService:
         }
     
     def _get_assigned_contracts(self, user_id: int) -> List[int]:
-        """Obtener contratos asignados a un usuario especÃ­fico"""
+        """Obtener contratos asignados a un usuario específico"""
         query = f"""
         SELECT contract_id
         FROM contract_advisors
@@ -698,7 +698,7 @@ ORDER BY c.id ASC;
 
     def _generate_serlefin_report(self, contracts_81, fecha_actual, reports_dir, result) -> None:
         """Genera el informe de la casa SERLEFIN (user 81)."""
-        logger.info(f"\nðŸ“Š Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
+        logger.info(f"\n📊 Generando reporte para USER 81 - SERLEFIN ({len(contracts_81)} contratos)...")
         lista_contratos_81 = ",".join(str(x) for x in contracts_81)
 
         conn_prod = self._connect_prod()
@@ -718,14 +718,14 @@ ORDER BY c.id ASC;
             self._write_multiproduct_excel(df_81, file_path_81, 81)
 
             result['serlefin_file'] = file_path_81
-            logger.info(f"âœ… INFORME USER 81 (SERLEFIN) GENERADO: {file_name_81}")
+            logger.info("INFORME USER 81 (SERLEFIN) GENERADO: %s", file_name_81)
 
         finally:
             conn_prod.close()
 
     def _generate_cobyser_report(self, contracts_45, fecha_actual, reports_dir, result) -> None:
         """Genera el informe de la casa COBYSER (user 45)."""
-        logger.info(f"\nðŸ“Š Generando reporte para USER 45 - COBYSER ({len(contracts_45)} contratos)...")
+        logger.info("Generando reporte para USER 45 - COBYSER (%s contratos)...", len(contracts_45))
         lista_contratos_45 = ",".join(str(x) for x in contracts_45)
 
         conn_prod = self._connect_prod()
@@ -752,7 +752,7 @@ ORDER BY c.id ASC;
             self._write_multiproduct_excel(df_45, file_path_45, 45)
 
             result['cobyser_file'] = file_path_45
-            logger.info(f"âœ… INFORME USER 45 (COBYSER) GENERADO: {file_name_45}")
+            logger.info("INFORME USER 45 (COBYSER) GENERADO: %s", file_name_45)
 
         finally:
             conn_prod.close()
@@ -803,6 +803,6 @@ ORDER BY c.id ASC;
         if contracts_45:
             self._generate_cobyser_report(contracts_45, fecha_actual, reports_dir, result)
 
-        logger.info("\nðŸ”¥ PROCESO COMPLETADO")
+        logger.info("\n🔥 PROCESO COMPLETADO")
         return result
 

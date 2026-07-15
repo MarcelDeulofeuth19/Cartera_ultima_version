@@ -59,11 +59,6 @@ class Settings(BaseSettings):
     # Para retrocompatibilidad (usuarios principales de cada casa)
     USER_IDS: List[int] = [45, 81]
 
-    # División de contratos (días 1-60) - 14 usuarios
-    DIVISION_USER_IDS: List[int] = [4, 7, 36, 58, 60, 62, 71, 77, 89, 90, 91, 114, 116, 113]
-    DIVISION_MIN_DAYS: int = 1   # Días de atraso mínimos para división
-    DIVISION_MAX_DAYS: int = 60  # Días de atraso máximos para división
-
     DAYS_THRESHOLD: int = 61      # Días de atraso mínimos (casas de cobranza)
     MAX_DAYS_THRESHOLD: int = 240  # Días de atraso máximos (casas de cobranza)
 
@@ -84,8 +79,11 @@ class Settings(BaseSettings):
     # (Cobyser usa FRANJA_COBYSER_USER_ID; aquí el principal de Serlefín.)
     SERLEFIN_PRIMARY_USER_ID: int = 81
 
-    # Estados de contrato EXCLUIDOS del proceso (anulado/fraude). Aplican a Phone y Twist.
-    EXCLUDED_CONTRACT_STATUS_IDS: str = "5,7"
+    # Estados de contrato EXCLUIDOS del proceso, POR PRODUCTO (los ids difieren):
+    #   Phone (contracts_status):        5 Anulado, 7 Fraude, 9 Fallecido.
+    #   Twist (twist_contract_status):   5 Anulado, 7 Fraude (9 = 'Garantia', NO excluir).
+    EXCLUDED_CONTRACT_STATUS_IDS: str = "5,7,9"
+    TWIST_EXCLUDED_CONTRACT_STATUS_IDS: str = "5,7"
     # Estado de pago "Atrasado" (cartera en mora) por producto.
     PHONE_ARREARS_PAYMENT_STATUS_ID: int = 4
     TWIST_ARREARS_PAYMENT_STATUS_ID: int = 3
@@ -113,10 +111,6 @@ class Settings(BaseSettings):
     REPORT_FILE_USER_45: str = "asignacion_45.txt"
     REPORT_FILE_USER_81: str = "asignacion_81.txt"
     REPORT_EXCEL_FIXED: str = "reporte_fijos_efect.xlsx"
-
-    # Reportes para división de contratos
-    REPORT_FILE_DIVISION: str = "division_contratos_{user_id}.txt"
-    REPORT_EXCEL_DIVISION: str = "reporte_division_contratos.xlsx"
 
     # File Lock para singleton
     LOCK_FILE: str = "assignment_process.lock"
@@ -273,15 +267,25 @@ class Settings(BaseSettings):
                 out.append(int(raw))
         return out
 
-    @property
-    def excluded_contract_status_id_list(self) -> List[int]:
-        """Estados de contrato excluidos del proceso (anulado/fraude)."""
+    @staticmethod
+    def _parse_status_ids(raw_value: str) -> List[int]:
+        """Convierte un CSV de ids de estado en lista única de enteros."""
         out: List[int] = []
-        for raw in str(self.EXCLUDED_CONTRACT_STATUS_IDS or "").split(","):
+        for raw in str(raw_value or "").split(","):
             raw = raw.strip()
             if raw.isdigit() and int(raw) not in out:
                 out.append(int(raw))
         return out
+
+    @property
+    def excluded_contract_status_id_list(self) -> List[int]:
+        """Estados EXCLUIDOS de Phone (contracts_status): anulado/fraude/fallecido."""
+        return self._parse_status_ids(self.EXCLUDED_CONTRACT_STATUS_IDS)
+
+    @property
+    def twist_excluded_contract_status_id_list(self) -> List[int]:
+        """Estados EXCLUIDOS de Twist (twist_contract_status): anulado/fraude."""
+        return self._parse_status_ids(self.TWIST_EXCLUDED_CONTRACT_STATUS_IDS)
 
     @property
     def redis_url(self) -> str:

@@ -1,5 +1,5 @@
 ﻿"""
-Servicio extendido para generaciÃ³n de reportes detallados de asignaciÃ³n
+Servicio extendido para generación de reportes detallados de asignación.
 """
 import psycopg2
 import pandas as pd
@@ -18,7 +18,7 @@ CUOTAS_ATRASADAS_COL = "Cuotas Atrasadas"
 
 
 class ReportServiceExtended:
-    """Servicio para generaciÃ³n de reportes detallados con informaciÃ³n de contratos fijos"""
+    """Servicio para generación de reportes detallados con información de contratos fijos."""
     
     def __init__(self):
         self.db_config_prod = {
@@ -370,7 +370,7 @@ ORDER BY c.id ASC;
         days_overdue_map: Optional[Dict[int, int]] = None,
     ) -> Tuple[str, pd.DataFrame]:
         """
-        Genera reporte detallado para un usuario especÃ­fico
+        Genera reporte detallado para un usuario específico
         
         Returns:
             Tuple[str, pd.DataFrame]: (ruta_archivo, dataframe)
@@ -380,7 +380,7 @@ ORDER BY c.id ASC;
             return None, None
 
         try:
-            logger.info(f"ðŸ“Š Generando reporte para {user_name} ({len(contracts)} contratos)...")
+            logger.info(f"📊 Generando reporte para {user_name} ({len(contracts)} contratos)...")
             
             # Fuente unica: MySQL en vivo. PG-prod quedo congelado en 2025-12 y
             # ademas no contiene ~35% de los contratos asignados, lo que producia
@@ -427,14 +427,14 @@ ORDER BY c.id ASC;
                 df_twist1.to_excel(writer, sheet_name='Twist1', index=False)
                 df_twist2.to_excel(writer, sheet_name='Twist2', index=False)
             logger.info(
-                "âœ… INFORME GENERADO: %s (Phone=%s, Twist1=%s, Twist2=%s)",
+                "✅ INFORME GENERADO: %s (Phone=%s, Twist1=%s, Twist2=%s)",
                 file_path, len(df), len(df_twist1), len(df_twist2),
             )
 
             return str(file_path), df
             
         except Exception as e:
-            logger.error(f"âŒ Error generando reporte para user {user_id}: {e}")
+            logger.error(f"❌ Error generando reporte para user {user_id}: {e}")
             return None, None
 
     def _finalize_phone_df(
@@ -1459,10 +1459,10 @@ ORDER BY c.id ASC;
     
     def calculate_distribution_metrics(self) -> Dict:
         """
-        Calcula mÃ©tricas de distribuciÃ³n 60/40 entre Serlefin y Cobyser
+        Calcula métricas de distribución 60/40 entre Serlefin y Cobyser
         
         Returns:
-            Dict: MÃ©tricas de distribuciÃ³n
+            Dict: Métricas de distribución
         """
         try:
             contracts_81 = self.get_assigned_contracts_for_house(settings.SERLEFIN_USERS)
@@ -1531,7 +1531,7 @@ ORDER BY c.id ASC;
             }
             
         except Exception as e:
-            logger.error(f"Error calculando mÃ©tricas: {e}")
+            logger.error(f"Error calculando métricas: {e}")
             return {}
     
     def generate_metrics_html(self, metrics: Dict, audience: str = "general") -> str:

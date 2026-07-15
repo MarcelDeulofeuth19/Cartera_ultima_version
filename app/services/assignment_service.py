@@ -1,12 +1,12 @@
 """
-Servicio principal de asignaciÃ³n de contratos.
-Implementa la lÃ³gica de contratos fijos, limpieza y balanceo configurable.
+Servicio principal de asignación de contratos a casas de cobranza.
+Implementa la lógica de contratos fijos, limpieza y balanceo configurable.
 """
 import logging
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Set, Any, Optional, Tuple
+from typing import List, Dict, Set, Any, Optional, Tuple, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy.orm import Session
 from sqlalchemy import bindparam, or_, text
@@ -17,7 +17,6 @@ from app.runtime_config.service import AssignmentRuntimeConfig, RuntimeConfigSer
 from app.services.blacklist_service import blacklist_service
 from app.services.contract_service import ContractService
 from app.services.history_service import HistoryService
-from app.services.manual_fixed_service import ManualFixedService
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +25,8 @@ SQL_SET_LOCK_TIMEOUT_2S = "SET LOCAL lock_timeout = '2s'"
 
 class AssignmentService:
     """
-    Servicio de asignaciÃ³n de contratos a asesores.
-    Implementa la lÃ³gica de contratos fijos, limpieza y balanceo.
+    Servicio de asignación de contratos a las casas de cobranza (Cobyser/Serlefin).
+    Implementa la lógica de contratos fijos, limpieza y balanceo.
     """
     
     def __init__(
@@ -37,8 +36,8 @@ class AssignmentService:
     ):
         """
         Args:
-            mysql_session: SesiÃ³n MySQL para consultar contratos
-            postgres_session: SesiÃ³n PostgreSQL para gestionar asignaciones
+            mysql_session: Sesión MySQL para consultar contratos
+            postgres_session: Sesión PostgreSQL para gestionar asignaciones
         """
         self.mysql_session = mysql_session
         self.postgres_session = postgres_session
@@ -46,10 +45,6 @@ class AssignmentService:
             ContractService(mysql_session) if mysql_session is not None else None
         )
         self.history_service = HistoryService(postgres_session)
-        self.manual_fixed_service = ManualFixedService(
-            postgres_session=postgres_session,
-            mysql_session=mysql_session,
-        )
         self.runtime_config_service = RuntimeConfigService()
         self._estado_actual_column_ready = False
         self._history_dpd_actual_column_ready = False
@@ -745,19 +740,6 @@ class AssignmentService:
             }
         return metadata
     
-    def process_manual_fixed_contracts(self, manual_contracts: Dict[int, List[int]]) -> Dict[str, Any]:
-        """
-        Procesa contratos fijos manuales con validaciones por lotes.
-        
-        Args:
-            manual_contracts: Diccionario {user_id: [contract_ids]}
-        
-        Returns:
-            EstadÃ­sticas de procesamiento
-        """
-        logger.info("Procesando contratos fijos manuales...")
-        return self.manual_fixed_service.validate_and_insert_manual_fixed(manual_contracts)
-    
     def get_fixed_contracts(self) -> Dict[int, Set[int]]:
         """
         Obtiene contratos fijos SOLO por promesas activas.
@@ -847,6 +829,108 @@ class AssignmentService:
             self.postgres_session.rollback()
             raise
 
+    # Tablas de gestión por producto (whitelist para el SQL dinámico).
+    _MANAGEMENT_TABLE_BY_PRODUCT = {
+        "PHONE": "managements",
+        "TWIST1": "managements_twist",
+        "TWIST2": "managements_twist2",
+    }
+
+    @staticmethod
+    def _normalize_contract_key(raw: Any) -> Optional[Union[int, str]]:
+        """
+        Normaliza el identificador de contrato de una gestión.
+
+        - None o cadena vacía -> None (se ignora).
+        - entero o texto numérico -> int (Phone/Twist1).
+        - texto no numérico (uuid de Twist2) -> str.
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, int):
+            return raw
+        text_value = str(raw).strip()
+        if not text_value:
+            return None
+        try:
+            return int(text_value)
+        except ValueError:
+            return text_value
+
+    def classify_agreement_contracts(self, producto: str = "PHONE") -> Dict[str, Any]:
+        """
+        Clasifica contratos con COMPROMISO DE PAGO VIGENTE según la casa del asesor
+        que los gestionó, usando ``alocreditindicators.users.agency_id`` como fuente
+        de verdad y la gestión vigente MÁS RECIENTE por contrato.
+
+        Reglas (app/core/management_rules.py):
+          - Regla 2 -> ``result['house']`` {45: set, 81: set}: la gestión vigente es
+            de una casa (agency 1=Cobyser / 2=Serlefin); el contrato debe quedar en
+            ESA casa.
+          - Regla 1 -> ``result['non_house']`` set: la gestión vigente es de un
+            usuario que NO es casa (agency NULL, empleado interno); el contrato NO
+            se asigna a las casas.
+
+        Vigencia: acuerdo_pago con ``promise_date >= hoy`` o pago_total del mes
+        calendario vigente (ver management_rules.vigente_agreement_sql).
+        """
+        from app.core import management_rules as mr
+
+        result: Dict[str, Any] = {"house": {45: set(), 81: set()}, "non_house": set()}
+        table = self._MANAGEMENT_TABLE_BY_PRODUCT.get(str(producto).upper())
+        if not table:
+            logger.warning("Producto sin tabla de gestión reconocida: %s", producto)
+            return result
+
+        cond = mr.vigente_agreement_sql("m.effect", "m.promise_date", "m.management_date")
+        # No se castea contract_id: en managements/_twist es entero, pero en
+        # managements_twist2 es texto (uuid de PDS, con blancos). Se normaliza en
+        # Python (int cuando aplica, uuid-string para Twist2), ignorando vacíos.
+        statement = text(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    m.contract_id AS contract_id,
+                    u.agency_id AS agency_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY m.contract_id
+                        ORDER BY COALESCE(m.management_date, TIMESTAMP '1900-01-01') DESC, m.id DESC
+                    ) AS rn
+                FROM alocreditindicators.{table} m
+                LEFT JOIN alocreditindicators.users u ON u.id = m.user_id
+                WHERE {cond}
+            )
+            SELECT contract_id, agency_id
+            FROM ranked
+            WHERE rn = 1
+            """
+        )
+        try:
+            rows = self.postgres_session.execute(statement).mappings().all()
+        except Exception as error:
+            logger.error("Error clasificando gestiones (%s): %s", table, error)
+            self.postgres_session.rollback()
+            raise
+
+        for row in rows:
+            contract_id = self._normalize_contract_key(row["contract_id"])
+            if contract_id is None:
+                continue
+            house_user = mr.house_user_for_agency(row["agency_id"])
+            if house_user in (45, 81):
+                result["house"][house_user].add(contract_id)
+            else:
+                result["non_house"].add(contract_id)
+
+        logger.info(
+            "Gestiones vigentes (%s): Cobyser=%s Serlefin=%s | no-casa(excluidos)=%s",
+            table,
+            len(result["house"][45]),
+            len(result["house"][81]),
+            len(result["non_house"]),
+        )
+        return result
+
     def get_current_assignments(self, producto: str = "PHONE") -> Dict[int, Set[int]]:
         """
         Obtiene las asignaciones actuales desde contract_advisors para un producto.
@@ -884,12 +968,16 @@ class AssignmentService:
                 if user_id_int in current_assignments:
                     current_assignments[user_id_int].add(int(contract_id))
             
-            logger.info(f"âœ“ Asignaciones actuales: Usuario 45: {len(current_assignments[45])}, Usuario 81: {len(current_assignments[81])}")
-            
+            logger.info(
+                "Asignaciones actuales: Cobyser (45): %s, Serlefin (81): %s",
+                len(current_assignments[45]),
+                len(current_assignments[81]),
+            )
+
             return current_assignments
-        
+
         except Exception as e:
-            logger.error(f"âœ— Error al consultar asignaciones actuales: {e}")
+            logger.error("Error al consultar asignaciones actuales: %s", e)
             raise
     
     def clean_assignments(
@@ -1254,12 +1342,20 @@ class AssignmentService:
         producto: str,
     ) -> Set[int]:
         """
-        Devuelve los contract_ids ya existentes en contract_advisors para el producto.
+        Devuelve los contract_ids ya asignados a una CASA DE COBRANZA para el producto.
+
+        La deduplicacion se limita a los usuarios de casa (settings.USER_IDS =
+        Cobyser 45 / Serlefin 81), igual que get_current_assignments. Asi, filas
+        que un contrato pueda tener en contract_advisors bajo usuarios que NO son
+        casa de cobranza (asignaciones heredadas de otros flujos) no bloquean su
+        asignacion a la casa: sin este filtro un contrato "ya existente" bajo otro
+        usuario se saltaba y nunca llegaba a la casa de cobranza.
         """
         existing_query = self.postgres_session.query(
             ContractAdvisor.contract_id
         ).filter(
-            ContractAdvisor.contract_id.in_(eligible_contract_ids)
+            ContractAdvisor.contract_id.in_(eligible_contract_ids),
+            ContractAdvisor.user_id.in_(settings.USER_IDS),
         )
         if producto == "PHONE":
             existing_query = existing_query.filter(
@@ -1322,34 +1418,35 @@ class AssignmentService:
             default_tipo=default_tipo,
         )
 
-    def assign_cobyser_franja(
+    def assign_franja_by_parity(
         self,
         excluded_from_assignment: Optional[Set[int]] = None,
         producto: str = "PHONE",
     ) -> Dict[str, Any]:
         """
-        Asigna la franja Cobyser (dias 31-60: buckets 31_45 y 46_60) SOLO a
-        Cobyser (user 45) y SOLO a cedulas con digito final impar (1,3,5,7,9),
-        para el producto indicado (PHONE o TWIST1).
+        Asigna la franja 31-60 (buckets 31_45 y 46_60) por PARIDAD de cédula:
+        impar -> Cobyser (45), par -> Serlefin (81).
 
-        Es una pasada ADITIVA e independiente del balanceo 60/40 de 61-240:
-        - El balanceo principal solo consulta >=61 dias, asi que no hay solape.
-        - save_assignments deduplica contra contract_advisors (por producto), por
-          lo que un contrato 31-60 impar ya asignado NO se mueve (solo nuevos).
-        - El historial se etiqueta con tipo='CEDULAS_IMPAR'.
+        Pasada ADITIVA e independiente del balanceo 60/40 de 61-240 (que solo
+        consulta >=61 días, sin solape). save_assignments deduplica contra
+        contract_advisors por casa/producto (no mueve lo ya asignado). El historial
+        se etiqueta 'CEDULAS_IMPAR' (Cobyser) o 'CEDULAS_PAR' (Serlefin).
         """
         stats: Dict[str, Any] = {
             "enabled": bool(settings.FRANJA_COBYSER_ENABLED),
             "producto": producto,
             "candidates": 0,
             "assigned": 0,
+            "assigned_cobyser": 0,
+            "assigned_serlefin": 0,
             "insert_stats": {},
         }
         if not settings.FRANJA_COBYSER_ENABLED:
-            logger.info("Franja Cobyser deshabilitada por configuracion (FRANJA_COBYSER_ENABLED=False).")
+            logger.info("Franja deshabilitada por configuracion (FRANJA_COBYSER_ENABLED=False).")
             return stats
 
         cobyser_user_id = int(settings.FRANJA_COBYSER_USER_ID)
+        serlefin_user_id = int(settings.SERLEFIN_PRIMARY_USER_ID)
         excluded = {
             int(contract_id)
             for contract_id in (excluded_from_assignment or set())
@@ -1357,37 +1454,28 @@ class AssignmentService:
         }
 
         contract_service = self._require_contract_service()
-        if producto == "TWIST1":
-            franja_contracts = contract_service.get_twist1_franja_cobyser_odd_contracts(
-                min_days=settings.FRANJA_COBYSER_MIN_DAYS,
-                max_days=settings.FRANJA_COBYSER_MAX_DAYS,
-                excluded_contract_ids=excluded or None,
-            )
-        else:
-            franja_contracts = contract_service.get_franja_cobyser_odd_contracts(
-                min_days=settings.FRANJA_COBYSER_MIN_DAYS,
-                max_days=settings.FRANJA_COBYSER_MAX_DAYS,
-                excluded_contract_ids=excluded or None,
-            )
+        franja_contracts = contract_service.get_franja_contracts_by_parity(
+            min_days=settings.FRANJA_COBYSER_MIN_DAYS,
+            max_days=settings.FRANJA_COBYSER_MAX_DAYS,
+            excluded_contract_ids=excluded or None,
+        )
         stats["candidates"] = len(franja_contracts)
         if not franja_contracts:
-            logger.info(
-                "Franja Cobyser (%s): no hay contratos 31-60 con cedula impar para asignar.",
-                producto,
-            )
+            logger.info("Franja (%s): no hay contratos 31-60 con cedula para asignar.", producto)
             return stats
 
-        franja_assignments: Dict[int, List[int]] = {
-            cobyser_user_id: [int(contract["contract_id"]) for contract in franja_contracts]
-        }
-        franja_days_map: Dict[int, int] = {
-            int(contract["contract_id"]): int(contract["days_overdue"])
-            for contract in franja_contracts
-        }
-        tipo_map: Dict[int, str] = {
-            int(contract["contract_id"]): "CEDULAS_IMPAR"
-            for contract in franja_contracts
-        }
+        franja_assignments: Dict[int, List[int]] = {cobyser_user_id: [], serlefin_user_id: []}
+        franja_days_map: Dict[int, int] = {}
+        tipo_map: Dict[int, str] = {}
+        for contract in franja_contracts:
+            contract_id = int(contract["contract_id"])
+            franja_days_map[contract_id] = int(contract["days_overdue"])
+            if contract.get("parity") == "impar":
+                franja_assignments[cobyser_user_id].append(contract_id)
+                tipo_map[contract_id] = "CEDULAS_IMPAR"
+            else:
+                franja_assignments[serlefin_user_id].append(contract_id)
+                tipo_map[contract_id] = "CEDULAS_PAR"
 
         insert_stats = self.save_assignments(
             franja_assignments,
@@ -1398,13 +1486,16 @@ class AssignmentService:
             producto=producto,
         )
         stats["assigned"] = int(insert_stats.get("inserted_total", 0))
+        stats["assigned_cobyser"] = int(insert_stats.get("inserted_cobyser", 0))
+        stats["assigned_serlefin"] = int(insert_stats.get("inserted_serlefin", 0))
         stats["insert_stats"] = insert_stats
         logger.info(
-            "Franja Cobyser (%s) asignada a user %s: candidatos=%s, insertados=%s",
+            "Franja por paridad (%s): candidatos=%s, insertados=%s (Cobyser impar=%s / Serlefin par=%s)",
             producto,
-            cobyser_user_id,
             stats["candidates"],
             stats["assigned"],
+            stats["assigned_cobyser"],
+            stats["assigned_serlefin"],
         )
         return stats
 
@@ -1802,9 +1893,9 @@ class AssignmentService:
             )
             results["insert_stats"] = insert_stats
 
-            # Franja Cobyser (31-60 dias, cedula impar): pasada aditiva e
-            # independiente del balanceo 60/40. Solo Cobyser (45), Serlefin 0%.
-            results["franja_cobyser_stats"] = self.assign_cobyser_franja(
+            # Franja 31-60 por paridad de cédula: impar -> Cobyser (45),
+            # par -> Serlefin (81). Pasada aditiva, independiente del 60/40 de 61-240.
+            results["franja_cobyser_stats"] = self.assign_franja_by_parity(
                 excluded_from_assignment=excluded_from_assignment,
                 producto="PHONE",
             )

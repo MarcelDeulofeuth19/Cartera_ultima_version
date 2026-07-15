@@ -1,6 +1,6 @@
 """
-Script de prueba para verificar la nueva lÃ³gica de bases fijas.
-Muestra los contratos que serÃ­an considerados fijos segÃºn los nuevos filtros.
+Script de prueba para verificar la nueva lógica de bases fijas.
+Muestra los contratos que serían considerados fijos según los nuevos filtros.
 """
 import os
 import sys
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ConfiguraciÃ³n de conexiÃ³n PostgreSQL
+# Configuración de conexión PostgreSQL
 required_env = {
     "POSTGRES_USER": os.getenv("POSTGRES_USER"),
     "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD"),
@@ -34,14 +34,14 @@ POSTGRES_URL = (
 )
 
 def test_fixed_contracts_logic():
-    """Prueba la lÃ³gica de contratos fijos sin modificar la base de datos"""
+    """Prueba la lógica de contratos fijos sin modificar la base de datos"""
     
     engine = create_engine(POSTGRES_URL)
     Session = sessionmaker(bind=engine)
     session = Session()
     
     print("=" * 100)
-    print("PRUEBA DE LÃ“GICA DE BASES FIJAS")
+    print("PRUEBA DE LÓGICA DE BASES FIJAS")
     print("=" * 100)
     print()
     
@@ -49,7 +49,7 @@ def test_fixed_contracts_logic():
     validity_date = datetime.now() - timedelta(days=30)
     
     print(f"ðŸ“… Fecha actual: {today}")
-    print(f"ðŸ“… Fecha lÃ­mite pago_total: {validity_date.date()}")
+    print(f"ðŸ“… Fecha límite pago_total: {validity_date.date()}")
     print()
     
     # Consulta para obtener registros con effect relevantes
@@ -62,9 +62,9 @@ def test_fixed_contracts_logic():
             management_date,
             promise_date,
             CASE 
-                WHEN effect = 'acuerdo_de_pago' AND promise_date >= CURRENT_DATE THEN 'VÃLIDO'
+                WHEN effect = 'acuerdo_de_pago' AND promise_date >= CURRENT_DATE THEN 'VÁLIDO'
                 WHEN effect = 'acuerdo_de_pago' AND promise_date < CURRENT_DATE THEN 'EXPIRADO'
-                WHEN effect = 'pago_total' AND management_date >= (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'VÃLIDO'
+                WHEN effect = 'pago_total' AND management_date >= (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'VÁLIDO'
                 WHEN effect = 'pago_total' AND management_date < (CURRENT_TIMESTAMP - INTERVAL '30 days') THEN 'EXPIRADO'
                 ELSE 'N/A'
             END as status
@@ -76,7 +76,7 @@ def test_fixed_contracts_logic():
     result = session.execute(query)
     rows = result.fetchall()
     
-    # EstadÃ­sticas
+    # Estadísticas
     stats = {
         'acuerdo_pago_valid': 0,
         'acuerdo_pago_expired': 0,
@@ -90,7 +90,7 @@ def test_fixed_contracts_logic():
     COBYSER_USERS = [45, 46, 47, 48, 49, 50, 51]
     SERLEFIN_USERS = [81, 82, 83, 84, 85, 86, 102, 103]
     
-    print("ðŸ“Š ANÃLISIS DE REGISTROS:")
+    print("📊 ANÁLISIS DE REGISTROS:")
     print("-" * 100)
     
     for row in rows:
@@ -102,16 +102,16 @@ def test_fixed_contracts_logic():
         promise_date = row[5]
         status = row[6]
         
-        # Contar estadÃ­sticas
+        # Contar estadísticas
         if effect == 'acuerdo_de_pago':
-            if status == 'VÃLIDO':
+            if status == 'VÁLIDO':
                 stats['acuerdo_pago_valid'] += 1
                 is_fixed = True
             else:
                 stats['acuerdo_pago_expired'] += 1
                 is_fixed = False
         elif effect == 'pago_total':
-            if status == 'VÃLIDO':
+            if status == 'VÁLIDO':
                 stats['pago_total_valid'] += 1
                 is_fixed = True
             else:
@@ -136,18 +136,18 @@ def test_fixed_contracts_logic():
     
     print()
     print("=" * 100)
-    print("ðŸ“ˆ RESUMEN DE RESULTADOS:")
+    print("📈 RESUMEN DE RESULTADOS:")
     print("=" * 100)
     print()
     
     print("ðŸ”µ ACUERDO DE PAGO:")
-    print(f"   âœ… VÃ¡lidos (promise_date >= hoy):     {stats['acuerdo_pago_valid']:4}")
-    print(f"   âŒ Expirados (promise_date < hoy):    {stats['acuerdo_pago_expired']:4}")
+    print(f"   ✅ Válidos (promise_date >= hoy):     {stats['acuerdo_pago_valid']:4}")
+    print(f"   ❌ Expirados (promise_date < hoy):    {stats['acuerdo_pago_expired']:4}")
     print()
     
     print("ðŸŸ¢ PAGO TOTAL:")
-    print(f"   âœ… VÃ¡lidos (â‰¤ 30 dÃ­as):               {stats['pago_total_valid']:4}")
-    print(f"   âŒ Expirados (> 30 dÃ­as):             {stats['pago_total_expired']:4}")
+    print(f"   ✅ Válidos (â‰¤ 30 días):               {stats['pago_total_valid']:4}")
+    print(f"   ❌ Expirados (> 30 días):             {stats['pago_total_expired']:4}")
     print()
     
     print("ðŸ¢ CONTRATOS FIJOS POR CASA DE COBRANZA:")
@@ -160,21 +160,21 @@ def test_fixed_contracts_logic():
     
     # Mostrar algunos contratos de ejemplo
     if fixed_contracts_45:
-        print(f"\nðŸ” Ejemplos de contratos fijos COBYSER (primeros 10):")
+        print(f"\n🔍 Ejemplos de contratos fijos COBYSER (primeros 10):")
         for contract_id in list(fixed_contracts_45)[:10]:
             print(f"   - Contrato: {contract_id}")
     
     if fixed_contracts_81:
-        print(f"\nðŸ” Ejemplos de contratos fijos SERLEFIN (primeros 10):")
+        print(f"\n🔍 Ejemplos de contratos fijos SERLEFIN (primeros 10):")
         for contract_id in list(fixed_contracts_81)[:10]:
             print(f"   - Contrato: {contract_id}")
     
     session.close()
-    print("\nâœ… Prueba completada exitosamente")
+    print("\n✅ Prueba completada exitosamente")
 
 if __name__ == "__main__":
     try:
         test_fixed_contracts_logic()
     except Exception as e:
-        print(f"\nâŒ Error durante la prueba: {e}", file=sys.stderr)
+        print(f"\n❌ Error durante la prueba: {e}", file=sys.stderr)
         sys.exit(1)

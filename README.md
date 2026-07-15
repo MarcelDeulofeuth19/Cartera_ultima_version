@@ -21,6 +21,7 @@ Servicio **FastAPI** que automatiza la asignación de la cartera en mora a las c
 - [Puesta en marcha](#puesta-en-marcha)
 - [API](#api)
 - [Informes](#informes)
+- [Caché (Redis)](#caché-redis)
 - [Tareas programadas](#tareas-programadas)
 - [Pruebas](#pruebas)
 - [Scripts operativos](#scripts-operativos)
@@ -50,6 +51,7 @@ de franja con el tiempo (drift de mora) conservan su asignación original.
 - 📧 **Envío automático** por correo a cada casa + informe de **fin de ciclo** mensual.
 - 🔐 **API firmada con HMAC** (servidor‑a‑servidor).
 - ⏰ **Scheduler** integrado (asignación diaria, notificaciones, cierre de mes).
+- ⚡ **Caché Redis** del conteo de asignaciones, con **degradación elegante** (si Redis no está disponible, la app sigue operando sin caché).
 - 🐳 **Docker / docker‑compose** listo para producción.
 
 ## Arquitectura
@@ -69,6 +71,7 @@ flowchart LR
     end
     PG[(PostgreSQL nexus_db\nschema alocreditindicators\ncontract_advisors*, history)]
     ICDB[(internal-config-db\nconfig dinamica / auditoria)]
+    RDS[(Redis\ncache asignaciones)]
 
     MY --> ASG
     CBS --> ASG
@@ -81,6 +84,7 @@ flowchart LR
     SCH --> ASG
     SCH --> REP
     App --- ICDB
+    API -. cache .- RDS
 ```
 
 | Origen | Uso |
@@ -90,6 +94,7 @@ flowchart LR
 | **PostgreSQL PDS** (`:5435`) | Datos de cliente de **Twist 2.0** (cédula, contacto). |
 | **PostgreSQL `nexus_db`** (schema `alocreditindicators`) | Asignaciones e historial: `contract_advisors`, `contract_advisors_twist`, `contract_advisors_twist2`, `contract_advisors_history`. |
 | **internal-config-db** (contenedor) | Configuración dinámica del panel y auditoría. |
+| **Redis** (contenedor) | Caché del conteo de asignaciones (`/assignments/current`), TTL diario. Opcional: la app degrada con elegancia si no está. |
 
 ## Productos y reglas de asignación
 
@@ -116,7 +121,7 @@ Estas reglas se configuran por entorno (ver [Configuración](#configuración-env
 .
 ├── app/                       # Aplicación (FastAPI)
 │   ├── api/routes/            # Endpoints: assignment, collection_agency, reports
-│   ├── core/                  # config (settings), dpd, seguridad HMAC
+│   ├── core/                  # config (settings), dpd, caché Redis, seguridad HMAC
 │   ├── database/              # conexiones y modelos SQLAlchemy
 │   ├── services/              # motor de asignación, informes, scheduler, etc.
 │   ├── runtime_config/        # configuración dinámica (DB interna) y auditoría
@@ -137,7 +142,7 @@ Estas reglas se configuran por entorno (ver [Configuración](#configuración-env
 ## Requisitos
 
 - **Python 3.10+** (probado en 3.10–3.12)
-- **Docker** y **docker compose** (despliegue recomendado)
+- **Docker** y **docker compose** (despliegue recomendado; incluye **Redis** como servicio)
 - Acceso de red a las bases MySQL/PostgreSQL de origen y a SMTP
 
 ## Configuración (`.env`)
@@ -154,8 +159,9 @@ cp .env.example .env
 > inyectan con `${VAR}` desde el `.env` no versionado; en `.env.example` quedan vacías.
 
 Variables principales: conexiones `MYSQL_*`, `POSTGRES_*`, `CBS_DB_*`, `PDS_DB_*`, `REPORTS_EXT_*`;
-`SMTP_*` para correo; `API_HMAC_SECRET` para la firma; listas `COBYSER_USERS` / `SERLEFIN_USERS`;
-y los flags de reglas (`FRANJA_COBYSER_*`, `PAGARE_EXCLUDE_*`, `DEFAULT_*_PERCENT`).
+`SMTP_*` para correo; `API_HMAC_SECRET` para la firma; **`REDIS_*`** y `CACHE_ASSIGNMENTS_TTL_SECONDS`
+para el caché; listas `COBYSER_USERS` / `SERLEFIN_USERS`; y los flags de reglas
+(`FRANJA_COBYSER_*`, `PAGARE_EXCLUDE_*`, `EXCLUDED_CONTRACT_STATUS_IDS`, `DEFAULT_*_PERCENT`).
 
 ## Puesta en marcha
 
@@ -192,10 +198,8 @@ donde `path` **no** incluye la query string. Hay un cliente de ejemplo en
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET`  | `/` · `/api/v1/health` | Estado del servicio |
-| `POST` | `/api/v1/run-assignment` | Ejecuta el proceso de asignación |
-| `POST` | `/api/v1/run-division` | Ejecuta la división de contratos |
-| `POST` | `/api/v1/finalize-assignments` | Finaliza asignaciones |
-| `POST` | `/api/v1/process-manual-fixed` | Procesa contratos fijos manuales |
+| `POST` | `/api/v1/run-assignment` | Ejecuta el proceso de asignación a casas de cobranza |
+| `POST` | `/api/v1/finalize-assignments` | Cierre masivo de asignaciones del día |
 | `GET`  | `/api/v1/lock-status` | Estado del lock del proceso |
 | `GET`  | `/api/v1/reports/download/{house_key}` | Descarga el informe de una casa. Soporta `?format=json&product=all\|phone\|twist1\|twist2` |
 | `GET`  | `/api/v1/reports/assignments/current` | Asignaciones actuales y estadísticas (incluye Twist1/Twist2) |
@@ -210,6 +214,19 @@ donde `path` **no** incluye la query string. Hay un cliente de ejemplo en
 - **Día inicial**: el campo de día inicial sale de `contract_advisors_history.dias_atraso_inicial`.
 - **Twist 2.0**: la `llave` y `contrato_x` usan el **external_id numérico** con formato `TWIST2_<id>`.
 - **Envío**: automático por correo a Cobyser y Serlefín, y **informe mensual de fin de ciclo**.
+
+## Caché (Redis)
+
+El endpoint `GET /api/v1/reports/assignments/current` cachea su resultado en **Redis** (un único
+cálculo por día; TTL `CACHE_ASSIGNMENTS_TTL_SECONDS`, 24 h por defecto). Reemplaza el antiguo caché
+en archivo JSON que se creaba en la raíz.
+
+- **Degradación elegante**: si Redis está deshabilitado o caído, la app **no falla** — consulta la
+  base de datos y responde igual (sin caché).
+- **Servicio**: `redis:7-alpine` en `docker-compose.yml` (red interna, no expuesto al host).
+- **Implementación**: `app/core/cache.py` — wrapper tolerante a fallos, reutilizable para más endpoints.
+- **Configuración**: `REDIS_ENABLED`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`,
+  `CACHE_ASSIGNMENTS_TTL_SECONDS`.
 
 ## Tareas programadas
 
@@ -238,11 +255,9 @@ bootstrap que añade la raíz del repo al `PYTHONPATH`):
 |---|---|
 | `scripts/run_assignment_once.py` | Ejecuta una corrida de asignación |
 | `scripts/run_assignment_debug.py` | Corrida de asignación con trazas |
-| `scripts/run_division.py` | Ejecuta la división de contratos |
 | `scripts/run_cycle_end_report.py` | Genera/envía el informe de fin de ciclo |
 | `scripts/generate_and_send_reports.py` | Genera y envía los informes a las casas |
 | `scripts/reset_assignments.py` | Reinicia asignaciones (operación delicada) |
-| `scripts/insert_fixed_contracts.py` | Inserta contratos fijos |
 | `scripts/checks/` | Diagnósticos y verificaciones manuales (conexiones, esquema, duplicados, etc.) |
 | `scripts/examples/hmac_client_example.py` | Cliente de ejemplo para consumir la API firmada |
 

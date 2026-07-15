@@ -51,38 +51,35 @@ def _make_contract_service_with_stubs(franja_contracts, document_map):
     return service
 
 
-def test_franja_filtra_solo_cedulas_impares():
+def test_franja_por_paridad_impar_cobyser_par_serlefin():
     franja = [
         {"contract_id": 1, "days_overdue": 40, "total_debt": 100, "status": "MORA"},
         {"contract_id": 2, "days_overdue": 50, "total_debt": 200, "status": "MORA"},
         {"contract_id": 3, "days_overdue": 55, "total_debt": 300, "status": "MORA"},
     ]
-    documents = {1: "100.000.001", 2: "100.000.002", 3: "55"}  # 1 y 3 impares, 2 par
+    documents = {1: "100.000.001", 2: "100.000.002", 3: "55"}  # 1,3 impar | 2 par
     service = _make_contract_service_with_stubs(franja, documents)
 
-    result = service.get_franja_cobyser_odd_contracts(min_days=31, max_days=60)
-
-    ids = sorted(c["contract_id"] for c in result)
-    assert ids == [1, 3]
-    # se adjunta la cedula normalizada (solo digitos)
+    result = service.get_franja_contracts_by_parity(min_days=31, max_days=60)
+    parity = {c["contract_id"]: c["parity"] for c in result}
+    assert parity == {1: "impar", 2: "par", 3: "impar"}
     cedulas = {c["contract_id"]: c["cedula"] for c in result}
-    assert cedulas[1] == "100000001"
-    assert cedulas[3] == "55"
+    assert cedulas[1] == "100000001" and cedulas[2] == "100000002" and cedulas[3] == "55"
 
 
-def test_franja_sin_cedula_no_se_asigna():
+def test_franja_sin_cedula_se_excluye():
     franja = [
         {"contract_id": 10, "days_overdue": 35, "total_debt": 1, "status": "MORA"},
     ]
-    documents = {}  # sin cedula -> no impar -> excluido
+    documents = {}  # sin cedula -> parity None -> excluido
     service = _make_contract_service_with_stubs(franja, documents)
 
-    assert service.get_franja_cobyser_odd_contracts() == []
+    assert service.get_franja_contracts_by_parity() == []
 
 
 def test_franja_vacia_retorna_lista_vacia():
     service = _make_contract_service_with_stubs([], {})
-    assert service.get_franja_cobyser_odd_contracts() == []
+    assert service.get_franja_contracts_by_parity() == []
 
 
 def test_metadata_tipo_por_contrato():
@@ -149,20 +146,20 @@ def test_decide_assignments_reglas_twist():
 
     contracts = [
         {"line_id": "a", "days_overdue": 20, "cedula": "11111111"},   # 1-30 -> no asigna
-        {"line_id": "b", "days_overdue": 40, "cedula": "12345671"},   # franja impar -> 45
-        {"line_id": "c", "days_overdue": 50, "cedula": "12345672"},   # franja par -> no asigna
+        {"line_id": "b", "days_overdue": 40, "cedula": "12345671"},   # franja impar -> Cobyser 45
+        {"line_id": "c", "days_overdue": 50, "cedula": "12345672"},   # franja par -> Serlefin 81
         {"line_id": "d", "days_overdue": 70, "cedula": "99999990"},   # 61-90 -> 40/60
         {"line_id": "e", "days_overdue": 80, "cedula": "99999991"},   # 61-90 -> 40/60
     ]
     decisions = TwistAssignmentService._decide_assignments(contracts, serlefin_ratio=0.6)
     by_line = {c["line_id"]: (uid, tipo) for c, uid, tipo in decisions}
 
-    # 1-30 y franja par no se asignan
+    # 1-30 no se asigna
     assert "a" not in by_line
-    assert "c" not in by_line
-    # franja impar -> Cobyser (45) con tipo CEDULAS_IMPAR
+    # franja por paridad: impar -> Cobyser (45), par -> Serlefin (81)
     assert by_line["b"] == (45, "CEDULAS_IMPAR")
-    # 61-90 se reparte entre 45/81 (40/60); ambos contratos asignados como ASIGNACION
+    assert by_line["c"] == (81, "CEDULAS_PAR")
+    # 61-90 se reparte entre 45/81 (40/60); ambos como ASIGNACION
     assigned_6190 = {by_line["d"][0], by_line["e"][0]}
     assert assigned_6190 == {45, 81}
     assert by_line["d"][1] == "ASIGNACION" and by_line["e"][1] == "ASIGNACION"

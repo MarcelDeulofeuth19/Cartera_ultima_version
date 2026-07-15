@@ -9,12 +9,21 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.dpd import is_cedula_impar
+from app.core.dpd import cedula_parity, is_cedula_impar
+from app.core.assignment_rules import (
+    ENDOSO_STATUS_LABELS,
+    endorsed_exclusion_sql,
+    endorsed_status_ids,
+)
 
 logger = logging.getLogger(__name__)
 
 # Constantes de negocio derivadas de configuración (evita números mágicos en SQL).
+# Los estados excluidos difieren por producto (los ids no coinciden entre
+# contracts_status y twist_contract_status): Phone excluye 5,7,9 (incluye
+# Fallecido); Twist excluye 5,7 (en Twist, 9 = 'Garantia', no se excluye).
 _EXCLUDED_STATUS_CSV = ", ".join(str(i) for i in settings.excluded_contract_status_id_list)
+_TWIST_EXCLUDED_STATUS_CSV = ", ".join(str(i) for i in settings.twist_excluded_contract_status_id_list)
 _PHONE_ARREARS_STATUS = settings.PHONE_ARREARS_PAYMENT_STATUS_ID
 _TWIST_ARREARS_STATUS = settings.TWIST_ARREARS_PAYMENT_STATUS_ID
 
@@ -128,6 +137,83 @@ class ContractService:
             )
             raise
 
+    def get_endorsed_contracts_map(
+        self,
+        contract_ids: Optional[List[int]] = None,
+    ) -> Dict[int, str]:
+        """
+        Mapea cada contrato ENDOSADO a afianzadora con su tipo de endoso.
+
+        Regla de negocio (app/core/assignment_rules.py): un contrato cuyo
+        ``pagare_status_id`` está en la lista de exclusión NO se asigna. Esta
+        consulta permite auditar/mapear esos contratos.
+
+        Args:
+            contract_ids: si se pasa, limita el mapeo a ese subconjunto (en
+                lotes); si es None, devuelve TODOS los contratos endosados.
+
+        Returns:
+            ``{contract_id: nombre_endoso}`` (p.ej. 'Endosado Libraval'). Vacío si
+            la regla está deshabilitada o no hay contratos endosados.
+        """
+        status_ids = endorsed_status_ids()
+        if not status_ids:
+            return {}
+        status_csv = ",".join(str(i) for i in status_ids)
+
+        def _run(id_filter: str) -> None:
+            rows = self.mysql_session.execute(
+                text(
+                    f"""
+                    SELECT c.id, c.pagare_status_id, ps.name
+                    FROM contract c
+                    LEFT JOIN pagare_status ps ON ps.id = c.pagare_status_id
+                    WHERE c.pagare_status_id IN ({status_csv}){id_filter}
+                    """
+                )
+            )
+            for contract_id, pagare_status_id, name in rows:
+                label = (
+                    str(name).strip()
+                    if name is not None and str(name).strip()
+                    else ENDOSO_STATUS_LABELS.get(
+                        int(pagare_status_id), str(pagare_status_id)
+                    )
+                )
+                endorsed[int(contract_id)] = label
+
+        endorsed: Dict[int, str] = {}
+        try:
+            if contract_ids is not None:
+                ids = [int(c) for c in contract_ids if int(c) > 0]
+                batch_size = 1000
+                for i in range(0, len(ids), batch_size):
+                    batch = ids[i : i + batch_size]
+                    if not batch:
+                        continue
+                    batch_csv = ",".join(str(c) for c in batch)
+                    _run(f" AND c.id IN ({batch_csv})")
+            else:
+                _run("")
+            logger.info("Contratos endosados mapeados: %s", len(endorsed))
+            return endorsed
+        except Exception as error:
+            logger.error("Error mapeando contratos endosados: %s", error)
+            raise
+
+    def get_endorsed_contract_ids(
+        self,
+        contract_ids: Optional[List[int]] = None,
+    ) -> Set[int]:
+        """
+        IDs de contratos ENDOSADOS a afianzadora (que NO se asignan).
+
+        Envoltura de get_endorsed_contracts_map cuando solo se necesitan los IDs.
+        """
+        if not endorsed_status_ids():
+            return set()
+        return set(self.get_endorsed_contracts_map(contract_ids).keys())
+
     def get_contracts_with_arrears(
         self,
         min_days: int = None,
@@ -192,15 +278,9 @@ class ContractService:
                 + ")\n"
             )
 
-        # Regla: excluir contratos endosados a afianzadora (pagaré).
-        pagare_clause = ""
-        pagare_ids = settings.pagare_excluded_status_id_list
-        if pagare_ids:
-            pagare_clause = (
-                "  AND (c.pagare_status_id IS NULL OR c.pagare_status_id NOT IN ("
-                + ",".join(str(p) for p in pagare_ids)
-                + "))\n"
-            )
+        # Regla de negocio: NO asignar contratos endosados a afianzadora (pagaré).
+        # Centralizada en app/core/assignment_rules.py.
+        pagare_clause = endorsed_exclusion_sql("c.pagare_status_id")
 
         query = f"""
         SELECT
@@ -289,22 +369,25 @@ class ContractService:
             logger.error(f"Error al consultar cedulas por contrato: {e}")
             raise
 
-    def get_franja_cobyser_odd_contracts(
+    def get_franja_contracts_by_parity(
         self,
         min_days: int = None,
         max_days: int = None,
         excluded_contract_ids: Optional[Set[int]] = None,
     ) -> List[Dict]:
         """
-        Obtiene contratos de la franja Cobyser (por defecto 31-60 dias de atraso)
-        cuya cedula termina en digito impar (1, 3, 5, 7, 9).
+        Obtiene los contratos de la franja 31-60 enriquecidos con su cédula y la
+        PARIDAD para el reparto: impar -> Cobyser, par -> Serlefin.
 
-        Reutiliza get_contracts_with_arrears para el filtro de dias, exclusiones y
-        lista negra, y agrega la cedula del cliente para evaluar la paridad.
+        Reutiliza get_contracts_with_arrears (filtro de días, exclusiones, lista
+        negra, endoso, fallecidos) y agrega:
+            'cedula'  -> documento normalizado (solo dígitos)
+            'parity'  -> 'impar' | 'par'
+        Los contratos SIN cédula/dígito se excluyen (no deberían existir) y se
+        registran en el log como anomalía.
 
         Returns:
-            Lista de dicts con las mismas claves que get_contracts_with_arrears
-            mas 'cedula' (normalizada a solo digitos).
+            Lista de dicts (mismas claves que get_contracts_with_arrears + cedula/parity).
         """
         if min_days is None:
             min_days = settings.FRANJA_COBYSER_MIN_DAYS
@@ -322,24 +405,32 @@ class ContractService:
         contract_ids = [int(contract["contract_id"]) for contract in franja_contracts]
         document_map = self.get_customer_documents_for_contracts(contract_ids)
 
-        odd_contracts: List[Dict] = []
+        classified: List[Dict] = []
+        sin_cedula: List[int] = []
         for contract in franja_contracts:
             contract_id = int(contract["contract_id"])
             raw_document = document_map.get(contract_id)
-            if not is_cedula_impar(raw_document):
+            parity = cedula_parity(raw_document)
+            if parity is None:
+                sin_cedula.append(contract_id)
                 continue
             enriched = dict(contract)
             enriched["cedula"] = self.normalize_customer_document(raw_document)
-            odd_contracts.append(enriched)
+            enriched["parity"] = parity
+            classified.append(enriched)
 
+        impares = sum(1 for c in classified if c["parity"] == "impar")
+        pares = len(classified) - impares
         logger.info(
-            "Franja Cobyser %s-%s dias: %s contratos en rango, %s con cedula impar",
-            min_days,
-            max_days,
-            len(franja_contracts),
-            len(odd_contracts),
+            "Franja %s-%s dias: %s en rango | impar(Cobyser)=%s par(Serlefin)=%s | sin_cedula=%s",
+            min_days, max_days, len(franja_contracts), impares, pares, len(sin_cedula),
         )
-        return odd_contracts
+        if sin_cedula:
+            logger.warning(
+                "Franja: %s contrato(s) SIN cedula (no deberian existir): %s",
+                len(sin_cedula), sin_cedula[:50],
+            )
+        return classified
 
     # ------------------------------------------------------------------
     # Twist 1.0 (MySQL alocreditprod, tablas con prefijo twist_).
@@ -439,15 +530,9 @@ class ContractService:
                 + ")\n"
             )
 
-        # Regla: excluir contratos Twist1 endosados a afianzadora (pagaré).
-        pagare_clause = ""
-        pagare_ids = settings.pagare_excluded_status_id_list
-        if pagare_ids:
-            pagare_clause = (
-                "  AND (c.twist_pagare_status_id IS NULL OR c.twist_pagare_status_id NOT IN ("
-                + ",".join(str(p) for p in pagare_ids)
-                + "))\n"
-            )
+        # Regla de negocio: NO asignar contratos Twist1 endosados a afianzadora.
+        # Centralizada en app/core/assignment_rules.py.
+        pagare_clause = endorsed_exclusion_sql("c.twist_pagare_status_id")
 
         query = f"""
         SELECT
@@ -460,7 +545,7 @@ class ContractService:
         WHERE ca.expiration_date < CURDATE()
           AND ca.outstanding_principal > 0
           AND ca.twist_contract_payment_status_id = {_TWIST_ARREARS_STATUS}
-          AND c.twist_contract_status_id NOT IN ({_EXCLUDED_STATUS_CSV})
+          AND c.twist_contract_status_id NOT IN ({_TWIST_EXCLUDED_STATUS_CSV})
         {exclusion_clause}{pagare_clause}
         GROUP BY ca.twist_contract_id
         HAVING DATEDIFF(CURDATE(), MIN(ca.expiration_date)) BETWEEN {min_days} AND {max_days}

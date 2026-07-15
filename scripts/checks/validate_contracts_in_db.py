@@ -1,6 +1,6 @@
 """
-Script de validaciÃ³n de contratos fijos contra base de datos.
-Compara los contratos definidos en el cÃ³digo con los registros en BD.
+Script de validación de contratos fijos contra base de datos.
+Compara los contratos definidos en el código con los registros en BD.
 """
 
 # --- bootstrap: ejecutable desde cualquier ruta (anade la raiz del repo al path) ---
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ConfiguraciÃ³n de bases de datos
+# Configuración de bases de datos
 required_env = {
     "MYSQL_USER": os.getenv("MYSQL_USER"),
     "MYSQL_PASSWORD": os.getenv("MYSQL_PASSWORD"),
@@ -71,7 +71,7 @@ from app.data.manual_fixed_contracts import (
 
 
 async def validate_contracts_in_mysql(contract_ids: list[int], session: AsyncSession) -> dict:
-    """Valida quÃ© contratos existen en la base de datos MySQL de contratos."""
+    """Valida qué contratos existen en la base de datos MySQL de contratos."""
     
     result = {
         "total_contracts": len(contract_ids),
@@ -115,7 +115,7 @@ async def validate_contracts_in_mysql(contract_ids: list[int], session: AsyncSes
 
 
 async def validate_contracts_in_postgres(contract_ids: list[int], user_id: int, session: AsyncSession) -> dict:
-    """Valida quÃ© contratos ya estÃ¡n asignados en PostgreSQL."""
+    """Valida qué contratos ya están asignados en PostgreSQL."""
     
     result = {
         "total_contracts": len(contract_ids),
@@ -159,12 +159,12 @@ async def validate_contracts_in_postgres(contract_ids: list[int], user_id: int, 
 
 
 async def generate_validation_report():
-    """Genera un reporte completo de validaciÃ³n."""
+    """Genera un reporte completo de validación."""
     
     print("=" * 100)
-    print("VALIDACIÃ“N DE CONTRATOS FIJOS - CÃ“DIGO vs BASE DE DATOS")
+    print("VALIDACIÓN DE CONTRATOS FIJOS - CÓDIGO vs BASE DE DATOS")
     print("=" * 100)
-    print(f"Fecha de validaciÃ³n: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Fecha de validación: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 100)
     
     async with MySQLSession() as mysql_session:
@@ -174,65 +174,65 @@ async def generate_validation_report():
             print(f"\n{'='*100}")
             print("COBYSER - Usuario 45")
             print(f"{'='*100}")
-            print(f"Total de contratos en cÃ³digo: {len(COBYSER_MANUAL_FIXED)}")
+            print(f"Total de contratos en código: {len(COBYSER_MANUAL_FIXED)}")
             
             # Validar en MySQL
             print("\n[1/2] Validando existencia en MySQL (contratos)...")
             cobyser_mysql = await validate_contracts_in_mysql(COBYSER_MANUAL_FIXED, mysql_session)
-            print(f"  âœ“ Encontrados en MySQL: {len(cobyser_mysql['found_in_db'])}")
-            print(f"  âœ— No encontrados en MySQL: {len(cobyser_mysql['not_found_in_db'])}")
+            print(f"  ✓ Encontrados en MySQL: {len(cobyser_mysql['found_in_db'])}")
+            print(f"  ✗ No encontrados en MySQL: {len(cobyser_mysql['not_found_in_db'])}")
             
             if cobyser_mysql['not_found_in_db']:
                 print(f"\n  Contratos NO encontrados en MySQL (primeros 20):")
                 for contract_id in cobyser_mysql['not_found_in_db'][:20]:
                     print(f"    - {contract_id}")
                 if len(cobyser_mysql['not_found_in_db']) > 20:
-                    print(f"    ... y {len(cobyser_mysql['not_found_in_db']) - 20} mÃ¡s")
+                    print(f"    ... y {len(cobyser_mysql['not_found_in_db']) - 20} más")
             
             # Validar en PostgreSQL
             print("\n[2/2] Validando asignaciones en PostgreSQL (contract_advisors)...")
             cobyser_postgres = await validate_contracts_in_postgres(COBYSER_MANUAL_FIXED, 45, postgres_session)
-            print(f"  âœ“ Ya asignados: {len(cobyser_postgres['already_assigned'])}")
-            print(f"  âœ— No asignados: {len(cobyser_postgres['not_assigned'])}")
+            print(f"  ✓ Ya asignados: {len(cobyser_postgres['already_assigned'])}")
+            print(f"  ✗ No asignados: {len(cobyser_postgres['not_assigned'])}")
             
             if cobyser_postgres['already_assigned']:
                 print(f"\n  Contratos YA asignados (primeros 10):")
                 for contract_id in cobyser_postgres['already_assigned'][:10]:
                     print(f"    - {contract_id}")
                 if len(cobyser_postgres['already_assigned']) > 10:
-                    print(f"    ... y {len(cobyser_postgres['already_assigned']) - 10} mÃ¡s")
+                    print(f"    ... y {len(cobyser_postgres['already_assigned']) - 10} más")
             
             # Validar Serlefin (Usuario 81)
             print(f"\n{'='*100}")
             print("SERLEFIN - Usuario 81")
             print(f"{'='*100}")
-            print(f"Total de contratos en cÃ³digo: {len(SERLEFIN_MANUAL_FIXED)}")
+            print(f"Total de contratos en código: {len(SERLEFIN_MANUAL_FIXED)}")
             
             # Validar en MySQL
             print("\n[1/2] Validando existencia en MySQL (contratos)...")
             serlefin_mysql = await validate_contracts_in_mysql(SERLEFIN_MANUAL_FIXED, mysql_session)
-            print(f"  âœ“ Encontrados en MySQL: {len(serlefin_mysql['found_in_db'])}")
-            print(f"  âœ— No encontrados en MySQL: {len(serlefin_mysql['not_found_in_db'])}")
+            print(f"  ✓ Encontrados en MySQL: {len(serlefin_mysql['found_in_db'])}")
+            print(f"  ✗ No encontrados en MySQL: {len(serlefin_mysql['not_found_in_db'])}")
             
             if serlefin_mysql['not_found_in_db']:
                 print(f"\n  Contratos NO encontrados en MySQL (primeros 20):")
                 for contract_id in serlefin_mysql['not_found_in_db'][:20]:
                     print(f"    - {contract_id}")
                 if len(serlefin_mysql['not_found_in_db']) > 20:
-                    print(f"    ... y {len(serlefin_mysql['not_found_in_db']) - 20} mÃ¡s")
+                    print(f"    ... y {len(serlefin_mysql['not_found_in_db']) - 20} más")
             
             # Validar en PostgreSQL
             print("\n[2/2] Validando asignaciones en PostgreSQL (contract_advisors)...")
             serlefin_postgres = await validate_contracts_in_postgres(SERLEFIN_MANUAL_FIXED, 81, postgres_session)
-            print(f"  âœ“ Ya asignados: {len(serlefin_postgres['already_assigned'])}")
-            print(f"  âœ— No asignados: {len(serlefin_postgres['not_assigned'])}")
+            print(f"  ✓ Ya asignados: {len(serlefin_postgres['already_assigned'])}")
+            print(f"  ✗ No asignados: {len(serlefin_postgres['not_assigned'])}")
             
             if serlefin_postgres['already_assigned']:
                 print(f"\n  Contratos YA asignados (primeros 10):")
                 for contract_id in serlefin_postgres['already_assigned'][:10]:
                     print(f"    - {contract_id}")
                 if len(serlefin_postgres['already_assigned']) > 10:
-                    print(f"    ... y {len(serlefin_postgres['already_assigned']) - 10} mÃ¡s")
+                    print(f"    ... y {len(serlefin_postgres['already_assigned']) - 10} más")
             
             # Resumen general
             print(f"\n{'='*100}")
@@ -245,29 +245,29 @@ async def generate_validation_report():
             total_assigned = len(cobyser_postgres['already_assigned']) + len(serlefin_postgres['already_assigned'])
             total_not_assigned = len(cobyser_postgres['not_assigned']) + len(serlefin_postgres['not_assigned'])
             
-            print(f"\nTotal de contratos fijos en cÃ³digo: {total_contracts}")
+            print(f"\nTotal de contratos fijos en código: {total_contracts}")
             print(f"\nMYSQL (tabla contracts):")
-            print(f"  âœ“ Encontrados: {total_found_mysql} ({total_found_mysql/total_contracts*100:.1f}%)")
-            print(f"  âœ— No encontrados: {total_not_found_mysql} ({total_not_found_mysql/total_contracts*100:.1f}%)")
+            print(f"  ✓ Encontrados: {total_found_mysql} ({total_found_mysql/total_contracts*100:.1f}%)")
+            print(f"  ✗ No encontrados: {total_not_found_mysql} ({total_not_found_mysql/total_contracts*100:.1f}%)")
             
             print(f"\nPOSTGRESQL (tabla contract_advisors):")
-            print(f"  âœ“ Ya asignados: {total_assigned} ({total_assigned/total_contracts*100:.1f}%)")
-            print(f"  âœ— Pendientes de asignar: {total_not_assigned} ({total_not_assigned/total_contracts*100:.1f}%)")
+            print(f"  ✓ Ya asignados: {total_assigned} ({total_assigned/total_contracts*100:.1f}%)")
+            print(f"  ✗ Pendientes de asignar: {total_not_assigned} ({total_not_assigned/total_contracts*100:.1f}%)")
             
             # Calcular contratos listos para insertar
             cobyser_ready = set(cobyser_mysql['found_in_db']) - set(cobyser_postgres['already_assigned'])
             serlefin_ready = set(serlefin_mysql['found_in_db']) - set(serlefin_postgres['already_assigned'])
             total_ready = len(cobyser_ready) + len(serlefin_ready)
             
-            print(f"\nðŸ“Š CONTRATOS LISTOS PARA INSERTAR:")
+            print(f"\n📊 CONTRATOS LISTOS PARA INSERTAR:")
             print(f"  Cobyser: {len(cobyser_ready)}")
             print(f"  Serlefin: {len(serlefin_ready)}")
             print(f"  Total: {total_ready}")
             
             if total_ready > 0:
-                print(f"\nâœ… Puedes ejecutar el endpoint POST /api/v1/process-manual-fixed para insertar {total_ready} contratos")
+                print(f"\n✅ Hay {total_ready} contrato(s) candidato(s) en MySQL aún no asignados a la casa; la asignación se realiza con el proceso de asignación (POST /api/v1/run-assignment).")
             else:
-                print(f"\nâš ï¸  No hay contratos nuevos para insertar. Todos ya estÃ¡n asignados.")
+                print(f"\n⚠️  No hay contratos nuevos para insertar. Todos ya están asignados.")
             
             print("\n" + "=" * 100)
             
@@ -275,12 +275,12 @@ async def generate_validation_report():
             report_file = f"reports/validation_contracts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             try:
                 with open(report_file, 'w', encoding='utf-8') as f:
-                    f.write("REPORTE DE VALIDACIÃ“N - CONTRATOS FIJOS\n")
+                    f.write("REPORTE DE VALIDACIÓN - CONTRATOS FIJOS\n")
                     f.write("=" * 100 + "\n")
                     f.write(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                     
                     f.write("COBYSER (Usuario 45):\n")
-                    f.write(f"  Total en cÃ³digo: {len(COBYSER_MANUAL_FIXED)}\n")
+                    f.write(f"  Total en código: {len(COBYSER_MANUAL_FIXED)}\n")
                     f.write(f"  Encontrados en MySQL: {len(cobyser_mysql['found_in_db'])}\n")
                     f.write(f"  Ya asignados: {len(cobyser_postgres['already_assigned'])}\n")
                     f.write(f"  Listos para insertar: {len(cobyser_ready)}\n\n")
@@ -292,7 +292,7 @@ async def generate_validation_report():
                         f.write("\n")
                     
                     f.write("SERLEFIN (Usuario 81):\n")
-                    f.write(f"  Total en cÃ³digo: {len(SERLEFIN_MANUAL_FIXED)}\n")
+                    f.write(f"  Total en código: {len(SERLEFIN_MANUAL_FIXED)}\n")
                     f.write(f"  Encontrados en MySQL: {len(serlefin_mysql['found_in_db'])}\n")
                     f.write(f"  Ya asignados: {len(serlefin_postgres['already_assigned'])}\n")
                     f.write(f"  Listos para insertar: {len(serlefin_ready)}\n\n")
@@ -308,15 +308,15 @@ async def generate_validation_report():
                 
                 print(f"ðŸ“„ Reporte guardado en: {report_file}")
             except Exception as e:
-                print(f"âš ï¸  No se pudo guardar el reporte: {e}")
+                print(f"⚠️  No se pudo guardar el reporte: {e}")
 
 
 async def main():
-    """FunciÃ³n principal."""
+    """Función principal."""
     try:
         await generate_validation_report()
     except Exception as e:
-        print(f"\nâŒ Error durante la validaciÃ³n: {e}")
+        print(f"\n❌ Error durante la validación: {e}")
         import traceback
         traceback.print_exc()
 

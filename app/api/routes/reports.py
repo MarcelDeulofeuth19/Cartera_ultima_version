@@ -126,10 +126,10 @@ async def download_report(
 @router.get("/assignments/current", summary="Consultar asignaciones actuales por usuario (Cache diario)")
 async def get_current_assignments():
     """
-    Devuelve las asignaciones activas.
-    Funciona con un esquema de caché estricto: consulta la base de datos 1 sola vez
-    por día (zona horaria Bogotá, Colombia) y guarda el resultado en un archivo JSON
-    en la raíz del proyecto. Si reciben 500 clics, siempre sirve el archivo cacheado.
+    Devuelve las asignaciones activas por casa de cobranza (Phone, Twist1, Twist2).
+    Usa caché diario en Redis (zona horaria Bogotá): consulta la base de datos una
+    sola vez por día y sirve el resultado cacheado en el resto de peticiones. Si
+    Redis no está disponible degrada con elegancia y consulta la base de datos.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo

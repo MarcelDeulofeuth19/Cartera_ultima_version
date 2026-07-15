@@ -90,3 +90,7 @@ github_actions_autogestion.pub
 id_rsa
 id_ed25519
 reports/manual_twist/
+
+# Logs de runtime y sentinels del scheduler
+logs/
+assignment_process.log*

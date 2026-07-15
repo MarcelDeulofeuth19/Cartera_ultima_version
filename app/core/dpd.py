@@ -36,8 +36,9 @@ ASSIGNMENT_DPD_ORDER = (
 # y SOLO a cedulas cuyo digito final es impar (1, 3, 5, 7, 9). Serlefin 0%.
 FRANJA_COBYSER_BUCKETS = ("31_45", "46_60")
 
-# Digitos finales de cedula considerados "impares" para la franja Cobyser.
+# Digitos finales de cedula: impar -> Cobyser, par -> Serlefin (franja 31-60).
 ODD_CEDULA_DIGITS = frozenset("13579")
+EVEN_CEDULA_DIGITS = frozenset("02468")
 
 
 def get_dpd_range(days_overdue: Optional[int]) -> Optional[str]:
@@ -90,6 +91,30 @@ def is_cedula_impar(documento: Optional[str]) -> bool:
     if not digits:
         return False
     return digits[-1] in ODD_CEDULA_DIGITS
+
+
+def is_cedula_par(documento: Optional[str]) -> bool:
+    """
+    Indica si una cedula/documento termina en digito PAR (0, 2, 4, 6, 8).
+
+    Documentos vacios o sin digitos se consideran NO pares (quedan fuera de la
+    franja, igual que las impares vacias).
+    """
+    digits = "".join(ch for ch in str(documento or "") if ch.isdigit())
+    if not digits:
+        return False
+    return digits[-1] in EVEN_CEDULA_DIGITS
+
+
+def cedula_parity(documento: Optional[str]) -> Optional[str]:
+    """
+    Clasifica la cedula para la franja 31-60:
+      'impar' -> Cobyser, 'par' -> Serlefin, None -> sin digito (no se asigna).
+    """
+    digits = "".join(ch for ch in str(documento or "") if ch.isdigit())
+    if not digits:
+        return None
+    return "impar" if digits[-1] in ODD_CEDULA_DIGITS else "par"
 
 
 def get_assignment_dpd_range(days_overdue: Optional[int]) -> Optional[str]:

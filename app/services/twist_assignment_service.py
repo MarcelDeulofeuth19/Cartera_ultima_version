@@ -23,9 +23,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dpd import (
     ASSIGNMENT_DPD_ORDER,
+    cedula_parity,
     get_assignment_dpd_range,
     get_dpd_range,
-    is_cedula_impar,
 )
 from app.database.models import ContractAdvisorHistory, ContractAdvisorTwist, Twist2Advisor
 from app.services.assignment_service import AssignmentService
@@ -52,12 +52,22 @@ class TwistAssignmentService:
 
     @staticmethod
     def _franja_decisions(contracts: List[dict]):
-        """Franja 31-60 + cedula impar -> Cobyser (45), 'CEDULAS_IMPAR'."""
+        """
+        Franja 31-60 por paridad de cédula:
+          impar -> Cobyser (45), 'CEDULAS_IMPAR'
+          par   -> Serlefin (81), 'CEDULAS_PAR'
+          sin dígito -> no se asigna.
+        """
         decisions = []
         for contract in contracts:
             days = int(contract.get("days_overdue") or 0)
-            if 31 <= days <= 60 and is_cedula_impar(contract.get("cedula")):
+            if not (31 <= days <= 60):
+                continue
+            parity = cedula_parity(contract.get("cedula"))
+            if parity == "impar":
                 decisions.append((contract, COBYSER_USER, "CEDULAS_IMPAR"))
+            elif parity == "par":
+                decisions.append((contract, SERLEFIN_USER, "CEDULAS_PAR"))
         return decisions
 
     @staticmethod
@@ -160,7 +170,7 @@ class TwistAssignmentService:
                     "dpd_actual": get_dpd_range(d), "estado_actual": "PENDIENTE",
                     "producto": "TWIST1",
                 })
-                if tipo == "CEDULAS_IMPAR":
+                if tipo in ("CEDULAS_IMPAR", "CEDULAS_PAR"):
                     stats["franja"] += 1
 
             if rows:
@@ -330,7 +340,7 @@ class TwistAssignmentService:
                         "fecha_inicial": now,
                     }
                 )
-                if tipo == "CEDULAS_IMPAR":
+                if tipo in ("CEDULAS_IMPAR", "CEDULAS_PAR"):
                     stats["franja"] += 1
 
             if rows:

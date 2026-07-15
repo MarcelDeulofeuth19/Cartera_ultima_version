@@ -6,10 +6,36 @@ pruebas de tabla en las fronteras de cada rango.
 """
 import pytest
 
-from app.core.dpd import get_dpd_range, get_assignment_dpd_range
+from app.core.dpd import (
+    get_dpd_range,
+    get_assignment_dpd_range,
+    is_cedula_par,
+    cedula_parity,
+)
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "doc, par, parity",
+    [
+        ("2", True, "par"),
+        ("10", True, "par"),      # termina en 0 -> par
+        ("100", True, "par"),
+        ("1", False, "impar"),
+        ("13579", False, "impar"),
+        ("24680", True, "par"),
+        ("1.234.568", True, "par"),
+        ("", False, None),
+        (None, False, None),
+        ("abc", False, None),
+    ],
+)
+def test_cedula_paridad(doc, par, parity):
+    # nota: is_cedula_par True solo para dígito final par; cedula_parity clasifica.
+    assert is_cedula_par(doc) is par
+    assert cedula_parity(doc) == parity
 
 
 @pytest.mark.parametrize(
