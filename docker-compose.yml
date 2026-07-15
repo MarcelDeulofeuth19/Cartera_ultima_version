@@ -7,9 +7,10 @@ services:
     image: postgres:15-alpine
     container_name: asignacion-internal-config-db
     environment:
-      - POSTGRES_DB=internal_config_db
-      - POSTGRES_USER=internal_config_user
-      - POSTGRES_PASSWORD=internal_config_pass
+      # Credenciales de la BD interna: NO hardcodeadas; se inyectan desde .env.
+      - POSTGRES_DB=${INTERNAL_CONFIG_DB_NAME}
+      - POSTGRES_USER=${INTERNAL_CONFIG_DB_USER}
+      - POSTGRES_PASSWORD=${INTERNAL_CONFIG_DB_PASSWORD}
       - PGDATA=/var/lib/postgresql/data/pgdata
     ports:
       - "5559:5432"
@@ -18,7 +19,7 @@ services:
       - ./docker-data/internal-config-db:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U internal_config_user -d internal_config_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${INTERNAL_CONFIG_DB_USER} -d ${INTERNAL_CONFIG_DB_NAME}"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -138,7 +139,7 @@ services:
       - DEFAULT_COBYSER_PERCENT=40
       - DEFAULT_ASSIGNMENT_MIN_DAYS=61
       - DEFAULT_ASSIGNMENT_MAX_DAYS=240
-      - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://internal_config_user:internal_config_pass@internal-config-db:5432/internal_config_db
+      - INTERNAL_CONFIG_DATABASE_URL=postgresql+psycopg2://${INTERNAL_CONFIG_DB_USER}:${INTERNAL_CONFIG_DB_PASSWORD}@internal-config-db:5432/${INTERNAL_CONFIG_DB_NAME}
       - API_HMAC_SECRET=${API_HMAC_SECRET}
       # Cache Redis
       - REDIS_ENABLED=True
