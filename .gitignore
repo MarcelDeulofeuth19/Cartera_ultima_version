@@ -94,3 +94,7 @@ reports/manual_twist/
 # Logs de runtime y sentinels del scheduler
 logs/
 assignment_process.log*
+
+# Cache JSON de asignaciones para servicio externo (runtime)
+asignaciones_cache_v2_*.json
+reports_regen/

@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, status, Request, BackgroundTasks
@@ -10,6 +11,32 @@ router = APIRouter(
     prefix="/api/v1/reports",
     tags=["reports"]
 )
+
+
+def assignments_json_path(today_str: str) -> Path:
+    """
+    Ruta del JSON de asignaciones que consume un servicio externo.
+    Se guarda en la raíz del proyecto: asignaciones_cache_v2_<fecha>.json
+    """
+    return Path(f"asignaciones_cache_v2_{today_str}.json")
+
+
+def persist_assignments_json(today_str: str, payload: dict, force: bool = False) -> None:
+    """
+    Escribe el JSON de asignaciones como ARCHIVO en la raíz del proyecto (para el
+    servicio externo que lo consume), además del caché Redis. Tolerante a fallos:
+    nunca rompe la respuesta del endpoint. Con force=False solo escribe si falta.
+    """
+    path = assignments_json_path(today_str)
+    try:
+        if force or not path.exists():
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+            logger.info("JSON de asignaciones escrito en raíz: %s", path)
+    except Exception as error:  # noqa: BLE001 - el archivo es best-effort
+        logger.warning("No se pudo escribir el JSON de asignaciones en raíz: %s", error)
 
 def _trigger_report_generation(background_tasks: BackgroundTasks, house_key: str):
     from app.database.connections import db_manager
@@ -130,6 +157,9 @@ async def get_current_assignments():
     Usa caché diario en Redis (zona horaria Bogotá): consulta la base de datos una
     sola vez por día y sirve el resultado cacheado en el resto de peticiones. Si
     Redis no está disponible degrada con elegancia y consulta la base de datos.
+
+    Además escribe el resultado como ARCHIVO JSON en la raíz del proyecto
+    (asignaciones_cache_v2_<fecha>.json) para el servicio externo que lo consume.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -147,6 +177,8 @@ async def get_current_assignments():
     cached = cache.get_json(cache_key)
     if cached is not None:
         logger.info("Sirviendo asignaciones desde caché Redis: %s", cache_key)
+        # Garantiza que el archivo JSON exista para el servicio externo.
+        persist_assignments_json(today_str, cached, force=False)
         return cached
 
     logger.info("Caché no encontrado para hoy. Consultando la base de datos...")
@@ -212,4 +244,6 @@ async def get_current_assignments():
 
         # Guardar en Redis para futuras consultas del día (no-op si Redis no está).
         cache.set_json(cache_key, payload, ttl_seconds=settings.CACHE_ASSIGNMENTS_TTL_SECONDS)
+        # Escribir/actualizar el archivo JSON en la raíz para el servicio externo.
+        persist_assignments_json(today_str, payload, force=True)
         return payload

@@ -412,14 +412,9 @@ ORDER BY c.id ASC;
 
             df_twist1, df_twist2 = self._build_twist_sheets(user_id)
 
-            # La franja 31-60 es EXCLUSIVA de Cobyser. Serlefin (81) NO debe
-            # reportar 31-60 (contratos que derivaron a esa mora desde 61+ por
-            # pago parcial; append-only no los reasigna). Se excluyen del informe
-            # de Serlefin en las 3 hojas.
-            if user_id == 81:
-                df, df_twist1, df_twist2 = self._drop_serlefin_franja(
-                    df, df_twist1, df_twist2
-                )
+            # Regla vigente: la franja 31-60 se reparte por PARIDAD de cédula
+            # (impar -> Cobyser, par -> Serlefin), por lo que Serlefin SÍ reporta
+            # sus contratos 31-60 (cédulas pares). Ya no se descartan esas filas.
 
             # Guardar Excel con UNA HOJA POR PRODUCTO
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
