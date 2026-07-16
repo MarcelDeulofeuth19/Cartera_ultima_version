@@ -482,15 +482,18 @@ ORDER BY c.id ASC;
     def _apply_tipo_franja(
         df: pd.DataFrame, cols_by_lower: Dict[str, str], user_id: int,
     ) -> None:
-        """Etiqueta la columna Tipo='Cédulas Impar' para la franja Cobyser 31-60."""
+        """
+        Etiqueta la columna Tipo en la franja 31-60 según la casa:
+        Cobyser (45) -> 'Cédulas Impar', Serlefin (81) -> 'Cédulas Par'.
+        """
         df['Tipo'] = ''
-        if user_id == 45:
-            rango_col = cols_by_lower.get('rango')
-            if rango_col and rango_col in df.columns:
-                es_franja = df[rango_col].astype(str).isin(
-                    ['31_60', '31_45', '46_60']
-                )
+        rango_col = cols_by_lower.get('rango')
+        if rango_col and rango_col in df.columns:
+            es_franja = df[rango_col].astype(str).isin(['31_60', '31_45', '46_60'])
+            if user_id == 45:
                 df.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+            elif user_id == 81:
+                df.loc[es_franja, 'Tipo'] = 'Cédulas Par'
 
     def _finalize_twist_sheet(self, tdf: pd.DataFrame, user_id: int) -> pd.DataFrame:
         """Finaliza una hoja Twist (Contrato_Fijo, Tipo, NIT)."""
@@ -499,9 +502,12 @@ ORDER BY c.id ASC;
         tdf = tdf.copy()
         tdf['Contrato_Fijo'] = 'NO'
         tdf['Tipo'] = ''
-        if user_id == 45 and 'rango' in tdf.columns:
+        if 'rango' in tdf.columns:
             es_franja = tdf['rango'].astype(str).isin(['31_60', '31_45', '46_60'])
-            tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+            if user_id == 45:
+                tdf.loc[es_franja, 'Tipo'] = 'Cédulas Impar'
+            elif user_id == 81:
+                tdf.loc[es_franja, 'Tipo'] = 'Cédulas Par'
         tdf.insert(0, 'NIT', '901546410-9')
         return tdf
 

@@ -706,8 +706,11 @@ ORDER BY c.id ASC;
         try:
             df_81 = self._load_house_dataframe(conn_prod, lista_contratos_81, contracts_81, "SERLEFIN")
 
-            # Columna "Tipo": vacia en Serlefin (la franja 31-60 es solo Cobyser).
+            # Columna "Tipo": franja 31-60 por paridad -> Serlefin 'Cédulas Par'.
             df_81['Tipo'] = ''
+            if 'Rango' in df_81.columns:
+                es_franja = df_81['Rango'].astype(str).isin(['31_60', '31_45', '46_60'])
+                df_81.loc[es_franja, 'Tipo'] = 'Cédulas Par'
 
             # Agregar campo NIT al inicio
             df_81.insert(0, 'NIT', '901546410-9')

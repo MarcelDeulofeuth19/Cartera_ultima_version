@@ -16,10 +16,10 @@ def test_apply_tipo_franja_cobyser():
     assert list(df["Tipo"]) == ["Cédulas Impar", "", "Cédulas Impar"]
 
 
-def test_apply_tipo_franja_serlefin_vacio():
-    df = pd.DataFrame({"rango": ["31_45", "61_90"]})
+def test_apply_tipo_franja_serlefin_par():
+    df = pd.DataFrame({"rango": ["31_45", "61_90", "46_60"]})
     ReportServiceExtended._apply_tipo_franja(df, {"rango": "rango"}, user_id=81)
-    assert list(df["Tipo"]) == ["", ""]
+    assert list(df["Tipo"]) == ["Cédulas Par", "", "Cédulas Par"]
 
 
 def test_apply_contrato_fijo_sin_columna():
@@ -47,6 +47,13 @@ def test_finalize_twist_sheet_con_datos():
     assert out.iloc[0]["Tipo"] == "Cédulas Impar"
     assert out.iloc[1]["Tipo"] == ""
     assert out.iloc[0]["Contrato_Fijo"] == "NO"
+
+
+def test_finalize_twist_sheet_serlefin_par():
+    tdf = pd.DataFrame({"rango": ["31_45", "61_90"], "contrato_x": [1, 2]})
+    out = rse._finalize_twist_sheet(tdf, user_id=81)
+    assert out.iloc[0]["Tipo"] == "Cédulas Par"   # franja par -> Serlefin
+    assert out.iloc[1]["Tipo"] == ""
 
 
 def test_drop_serlefin_franja():

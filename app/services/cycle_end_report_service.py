@@ -460,12 +460,14 @@ def _populate_output_columns(merged: pd.DataFrame, house_key: str) -> None:
     merged[RANGO_INICIAL] = merged["Dias_iniciales_Mes"].apply(to_rango)
     merged["Rango_Actual"] = merged["Dias_Actual"].apply(to_rango)
 
-    # Columna "Tipo": franja Cobyser (dias 31-60) = "Cedulas Impar". Solo Cobyser;
-    # se evalua por el rango inicial (buckets 31_45/46_60). Vacia en el resto.
+    # Columna "Tipo": franja 31-60 por paridad -> Cobyser 'Cédulas Impar',
+    # Serlefin 'Cédulas Par'. Se evalua por el rango inicial (31_45/46_60).
     merged["Tipo"] = ""
+    es_franja = merged[RANGO_INICIAL].astype(str).isin({"31_45", "46_60", "31_60"})
     if house_key == "cobyser":
-        es_franja = merged[RANGO_INICIAL].astype(str).isin({"31_45", "46_60", "31_60"})
         merged.loc[es_franja, "Tipo"] = "Cédulas Impar"
+    elif house_key == "serlefin":
+        merged.loc[es_franja, "Tipo"] = "Cédulas Par"
 
     merged["Ingreso_Mes_Actual"] = merged.get("monto_mes", 0).fillna(0)
     ultimo_pago = pd.to_datetime(merged.get("ultimo_pago_mes"), errors="coerce")
