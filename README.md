@@ -22,10 +22,10 @@ Servicio **FastAPI** que automatiza la asignación de la cartera en mora a las c
 - [API](#api)
 - [Informes](#informes)
 - [Caché (Redis)](#caché-redis)
+- [Integración externa (JSON en la raíz)](#integración-externa-json-en-la-raíz)
 - [Tareas programadas](#tareas-programadas)
 - [Pruebas](#pruebas)
 - [Scripts operativos](#scripts-operativos)
-- [Documentación](#documentación)
 - [Calidad de código (SonarQube)](#calidad-de-código-sonarqube)
 - [Seguridad](#seguridad)
 
@@ -44,14 +44,15 @@ de franja con el tiempo (drift de mora) conservan su asignación original.
 ## Características
 
 - 🧩 **Tres productos** en un mismo motor: Phone, Twist 1.0 y Twist 2.0, cada uno en su tabla.
-- ⚖️ **Reglas de reparto** configurables: franja 31‑60 (solo Cobyser, cédulas impares), 61‑240 con
-  reparto **40/60** Cobyser/Serlefín por bucket DPD.
-- 🚫 **Exclusiones de negocio**: contratos endosados a pagaré y cartera al día (`<31`).
+- ⚖️ **Reglas de reparto** configurables: franja 31‑60 **por paridad de cédula** (impares→Cobyser,
+  pares→Serlefín) en los **tres productos**; 61‑240 con reparto **40/60** Cobyser/Serlefín por bucket DPD.
+- 🚫 **Exclusiones de negocio**: contratos endosados a pagaré, **fallecidos** y cartera al día (`<31`).
 - 📊 **Informes** por producto (una hoja por producto) con paridad financiera total.
 - 📧 **Envío automático** por correo a cada casa + informe de **fin de ciclo** mensual.
 - 🔐 **API firmada con HMAC** (servidor‑a‑servidor).
 - ⏰ **Scheduler** integrado (asignación diaria, notificaciones, cierre de mes).
 - ⚡ **Caché Redis** del conteo de asignaciones, con **degradación elegante** (si Redis no está disponible, la app sigue operando sin caché).
+- 📤 **Exportador programado** del JSON de asignaciones a la raíz del proyecto (integración con servicio externo).
 - 🐳 **Docker / docker‑compose** listo para producción.
 
 ## Arquitectura
@@ -106,12 +107,21 @@ flowchart LR
 
 **Reglas (idénticas para los tres productos):**
 
-1. **Franja 31‑60** (`31_45` y `46_60`): se asigna **solo a Cobyser** y **solo cédulas impares**
-   (terminadas en 1, 3, 5, 7, 9). Serlefín 0 %. Tipo `CEDULAS_IMPAR`.
+1. **Franja 31‑60 por paridad de cédula** (`31_45` y `46_60`): el **último dígito** de la cédula
+   decide la casa — **impar** (1, 3, 5, 7, 9) → **Cobyser** (tipo `CEDULAS_IMPAR`); **par**
+   (0, 2, 4, 6, 8) → **Serlefín** (tipo `CEDULAS_PAR`). Los documentos sin dígitos quedan excluidos.
 2. **61‑240**: reparto **40 % Cobyser / 60 % Serlefín** por bucket DPD. Tipo `ASIGNACION`.
-3. **Exclusión de pagarés**: se excluyen los contratos endosados a afianzadora
+3. **Exclusión de pagarés (endosados)**: se excluyen los contratos endosados a afianzadora
    (`pagare_status_id ∈ {1 Libraval, 2 Fianzavasa, 3 Figarantías}`), tanto en la asignación como en los informes.
-4. **Cartera al día**: la mora `<31` no entra en los informes de Twist.
+4. **Exclusión de fallecidos**: se excluyen por estado del contrato
+   (`EXCLUDED_CONTRACT_STATUS_IDS = 5 Anulado, 7 Fraude, 9 Fallecido` en Phone;
+   `TWIST_EXCLUDED_CONTRACT_STATUS_IDS = 5, 7` en Twist).
+5. **Cartera al día**: la mora `<31` no entra en los informes de Twist.
+
+**Casas de cobranza e identidad de usuario.** Las casas se reconocen por `users.agency_id`
+(**1 = Cobyser**, **2 = Serlefín**); el módulo [`app/core/management_rules.py`](app/core/management_rules.py)
+centraliza esa correspondencia y la de acuerdos de pago vigentes (`acuerdo_pago` / `pago_total`) para
+**mantener** un contrato con la casa que ya gestiona su acuerdo.
 
 Estas reglas se configuran por entorno (ver [Configuración](#configuración-env)).
 
@@ -129,10 +139,9 @@ Estas reglas se configuran por entorno (ver [Configuración](#configuración-env
 ├── tests/                     # Suite de pruebas (pytest): unit / integration / e2e
 ├── migrations/                # Migraciones de base de datos
 ├── scripts/                   # Scripts operativos (ver sección Scripts)
-│   ├── checks/                # Diagnósticos y verificaciones manuales
+│   ├── export_assignments_json.py  # Exportador del JSON de asignaciones (cron)
 │   ├── examples/              # Ejemplo de cliente HMAC
 │   └── windows/               # .bat de apoyo (Windows)
-├── docs/                      # Documentación detallada por tema
 ├── main.py                    # Punto de entrada (uvicorn main:app)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / requirements-dev.txt / pyproject.toml
@@ -158,10 +167,12 @@ cp .env.example .env
 > 🔒 Los **secretos nunca van en archivos versionados**. En `docker-compose.yml` las contraseñas se
 > inyectan con `${VAR}` desde el `.env` no versionado; en `.env.example` quedan vacías.
 
-Variables principales: conexiones `MYSQL_*`, `POSTGRES_*`, `CBS_DB_*`, `PDS_DB_*`, `REPORTS_EXT_*`;
-`SMTP_*` para correo; `API_HMAC_SECRET` para la firma; **`REDIS_*`** y `CACHE_ASSIGNMENTS_TTL_SECONDS`
-para el caché; listas `COBYSER_USERS` / `SERLEFIN_USERS`; y los flags de reglas
-(`FRANJA_COBYSER_*`, `PAGARE_EXCLUDE_*`, `EXCLUDED_CONTRACT_STATUS_IDS`, `DEFAULT_*_PERCENT`).
+Variables principales: conexiones `MYSQL_*`, `POSTGRES_*`, `CBS_DB_*`, `PDS_DB_*`, `REPORTS_EXT_*`,
+`INTERNAL_CONFIG_DB_*` (BD interna de configuración/auditoría); `SMTP_*` para correo;
+`API_HMAC_SECRET` para la firma; **`REDIS_*`** y `CACHE_ASSIGNMENTS_TTL_SECONDS` para el caché;
+listas `COBYSER_USERS` / `SERLEFIN_USERS`; y los flags de reglas (`FRANJA_COBYSER_*`,
+`SERLEFIN_PRIMARY_USER_ID`, `EXCLUDED_CONTRACT_STATUS_IDS` y `TWIST_EXCLUDED_CONTRACT_STATUS_IDS`
+para endosados/fallecidos, `DEFAULT_*_PERCENT`, `AUTO_ASSIGNMENT_TIMEZONE`).
 
 ## Puesta en marcha
 
@@ -218,8 +229,7 @@ donde `path` **no** incluye la query string. Hay un cliente de ejemplo en
 ## Caché (Redis)
 
 El endpoint `GET /api/v1/reports/assignments/current` cachea su resultado en **Redis** (un único
-cálculo por día; TTL `CACHE_ASSIGNMENTS_TTL_SECONDS`, 24 h por defecto). Reemplaza el antiguo caché
-en archivo JSON que se creaba en la raíz.
+cálculo por día; TTL `CACHE_ASSIGNMENTS_TTL_SECONDS`, 24 h por defecto).
 
 - **Degradación elegante**: si Redis está deshabilitado o caído, la app **no falla** — consulta la
   base de datos y responde igual (sin caché).
@@ -228,13 +238,31 @@ en archivo JSON que se creaba en la raíz.
 - **Configuración**: `REDIS_ENABLED`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`,
   `CACHE_ASSIGNMENTS_TTL_SECONDS`.
 
+## Integración externa (JSON en la raíz)
+
+Un servicio externo consume el archivo `asignaciones_cache_v2_<fecha>.json` en la **raíz del proyecto**
+(mismo formato que `/api/v1/reports/assignments/current`: conteos por casa y producto). Se escribe de
+dos formas, ambas idempotentes (sobrescriben el del día):
+
+- **En caliente**: el propio endpoint lo regenera al calcular las asignaciones del día.
+- **Programado**: `scripts/export_assignments_json.py` vía **cron** (05:20 América/Bogotá), que lo
+  genera aunque nadie llame al endpoint. El script incluye un *bootstrap* de `PYTHONPATH`, pero **debe
+  ejecutarse con la raíz del repo como CWD** (el cron hace `cd /opt/Cartera_ultima_version && …`) para
+  que el JSON quede en la raíz. Los archivos `asignaciones_cache_v2_*.json` están **gitignored**.
+
 ## Tareas programadas
 
-El scheduler integrado ejecuta (configurable por `.env`):
+El scheduler integrado (in‑app) ejecuta (configurable por `.env`):
 
 - **Asignación automática** (diaria).
 - **Notificaciones** por correo a las casas en los días configurados.
 - **Informe de fin de ciclo** + **cierre mensual** el último día del mes.
+
+Además, en el **host** hay un `cron` que ejecuta el exportador del JSON de asignaciones:
+
+```cron
+20 5 * * * cd /opt/Cartera_ultima_version && /opt/Cartera_ultima_version/.venv/bin/python scripts/export_assignments_json.py >> /opt/Cartera_ultima_version/logs/export_assignments_json.log 2>&1
+```
 
 ## Pruebas
 
@@ -258,26 +286,12 @@ bootstrap que añade la raíz del repo al `PYTHONPATH`):
 | `scripts/run_cycle_end_report.py` | Genera/envía el informe de fin de ciclo |
 | `scripts/generate_and_send_reports.py` | Genera y envía los informes a las casas |
 | `scripts/reset_assignments.py` | Reinicia asignaciones (operación delicada) |
-| `scripts/checks/` | Diagnósticos y verificaciones manuales (conexiones, esquema, duplicados, etc.) |
+| `scripts/export_assignments_json.py` | Exporta el JSON de asignaciones a la raíz (cron; ver [Integración externa](#integración-externa-json-en-la-raíz)) |
 | `scripts/examples/hmac_client_example.py` | Cliente de ejemplo para consumir la API firmada |
 
 ```bash
 python scripts/run_assignment_once.py        # funciona desde la raíz o desde cualquier carpeta
 ```
-
-## Documentación
-
-Documentación temática en [`docs/`](docs/):
-
-| Documento | Tema |
-|---|---|
-| [`docs/GUIA_RAPIDA.md`](docs/GUIA_RAPIDA.md) | Guía rápida de uso |
-| [`docs/DOCKER_README.md`](docs/DOCKER_README.md) | Despliegue con Docker |
-| [`docs/SISTEMA_INFORMES_README.md`](docs/SISTEMA_INFORMES_README.md) | Sistema de informes |
-| [`docs/BASES_FIJAS.md`](docs/BASES_FIJAS.md) · [`docs/MIGRACION_BASES_FIJAS.md`](docs/MIGRACION_BASES_FIJAS.md) | Contratos fijos y su migración |
-| [`docs/BALANCE_EQUITATIVO_README.md`](docs/BALANCE_EQUITATIVO_README.md) | Balance equitativo del reparto |
-| [`docs/DIVISION_CONTRATOS.md`](docs/DIVISION_CONTRATOS.md) | División de contratos |
-| [`docs/jira.md`](docs/jira.md) | Bitácora / changelog de cambios |
 
 ## Calidad de código (SonarQube)
 
